@@ -21,6 +21,11 @@ export interface ToolSpec {
   description: string;
   /** JSON Schema for the tool input (type: object). */
   inputSchema: Record<string, unknown>;
+  /**
+   * Stream the input unbuffered (Anthropic `eager_input_streaming`; default true). Unbuffered input is
+   * not validated server-side, so malformed JSON fails the whole turn instead of reaching the loop.
+   */
+  eagerInput?: boolean;
 }
 
 export interface CompletionRequest {

@@ -81,7 +81,9 @@ export async function runAgent<O>(options: AgentRunOptions<O>): Promise<AgentRun
   if (tools.has(options.submit.name)) throw new Error(`tool name ${options.submit.name} is reserved for submission`);
   const specs = [
     ...[...tools.values()].map((t) => toolSpec(t.name, t.description, t.input)),
-    toolSpec(options.submit.name, options.submit.description, options.submit.output),
+    // The deliverable is a large nested object: buffered input lets the server repair malformed JSON
+    // into a value the schema check can reject with feedback, instead of a turn that fails on retry.
+    { ...toolSpec(options.submit.name, options.submit.description, options.submit.output), eagerInput: false },
   ];
   const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: options.prompt }] }];
   const steps: AgentStep[] = [];

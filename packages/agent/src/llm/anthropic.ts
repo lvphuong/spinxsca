@@ -71,7 +71,7 @@ export class AnthropicProvider implements LlmProvider {
           name: tool.name,
           description: tool.description,
           input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
-          eager_input_streaming: true,
+          ...(tool.eagerInput === false ? {} : { eager_input_streaming: true }),
         })),
         messages: request.messages.map(toParam),
         thinking: { type: 'adaptive' },
