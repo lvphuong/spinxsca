@@ -1,0 +1,35 @@
+id: 007-hardcoded-secret
+title: Hardcoded credentials in a settings module
+description: >-
+  Fabricated high-entropy values assigned to credential-like keys. Provider-formatted tokens are
+  deliberately avoided so the fixture does not trip repository push protection.
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: HARDCODED_SECRET
+    cwe: [CWE-798]
+    path: settings.js
+    lines: [3, 3]
+    detectable_by: [secrets]
+    min_phase: 1
+  - id: GT-2
+    category: HARDCODED_SECRET
+    cwe: [CWE-798]
+    path: settings.js
+    lines: [4, 4]
+    detectable_by: [secrets]
+    min_phase: 1
+  - id: GT-3
+    category: HARDCODED_SECRET
+    cwe: [CWE-798]
+    path: settings.js
+    lines: [9, 9]
+    detectable_by: [secrets]
+    min_phase: 1
+negatives:
+  - path: settings.js
+    lines: [5, 6]
+    reason: values read from the environment or non-secret configuration
+  - path: safe.js
+    reason: credentials loaded from the environment

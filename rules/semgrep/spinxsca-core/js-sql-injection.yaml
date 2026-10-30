@@ -1,0 +1,37 @@
+rules:
+  - id: js-sql-injection
+    message: >-
+      HTTP request input flows into a SQL statement string. Use parameter placeholders and pass the
+      values separately so they are never parsed as SQL.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+      owasp:
+        - "A05:2025 - Injection"
+      confidence: MEDIUM
+      spinxsca:
+        category: SQL_INJECTION
+        family: sqli
+        title: SQL injection from HTTP request input
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.headers
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.query($SQL, ...)
+              - pattern: $DB.execute($SQL, ...)
+              - pattern: $DB.raw($SQL, ...)
+              - pattern: $DB.unsafe($SQL, ...)
+          - focus-metavariable: $SQL

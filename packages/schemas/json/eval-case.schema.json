@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "languages": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "default": "src",
+      "type": "string"
+    },
+    "findings": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "SQL_INJECTION",
+              "NOSQL_INJECTION",
+              "COMMAND_INJECTION",
+              "CODE_INJECTION",
+              "XSS",
+              "PATH_TRAVERSAL",
+              "SSRF",
+              "OPEN_REDIRECT",
+              "XXE",
+              "INSECURE_DESERIALIZATION",
+              "MISSING_AUTHENTICATION",
+              "MISSING_AUTHORIZATION",
+              "BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+              "TENANT_ISOLATION",
+              "HARDCODED_SECRET",
+              "WEAK_CRYPTO",
+              "INSECURE_RANDOMNESS",
+              "CSRF",
+              "INSECURE_CONFIGURATION",
+              "VULNERABLE_DEPENDENCY",
+              "RACE_CONDITION",
+              "BUSINESS_LOGIC",
+              "PROTOTYPE_POLLUTION",
+              "LOG_INJECTION",
+              "SENSITIVE_DATA_EXPOSURE",
+              "OTHER"
+            ]
+          },
+          "cwe": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^CWE-\\d+$"
+            }
+          },
+          "path": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "CRITICAL",
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "INFO"
+            ]
+          },
+          "detectable_by": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sast",
+                "sca",
+                "secrets",
+                "ai"
+              ]
+            }
+          },
+          "min_phase": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "cwe",
+          "path",
+          "lines",
+          "detectable_by"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "negatives": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "languages"
+  ],
+  "additionalProperties": false
+}

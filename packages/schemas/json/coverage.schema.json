@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "type": "string",
+      "enum": [
+        "FULL",
+        "INCREMENTAL",
+        "TARGETED"
+      ]
+    },
+    "completeness": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "FAILED"
+      ]
+    },
+    "files": {
+      "type": "object",
+      "properties": {
+        "analyzed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "listDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "analyzed",
+        "total"
+      ]
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rules": {
+      "type": "object",
+      "properties": {
+        "executed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bundleDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "executed",
+        "bundleDigests",
+        "ids"
+      ]
+    },
+    "reviewedSurfaces": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deferred": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId",
+          "reason"
+        ]
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "candidateId": {
+            "type": "string"
+          },
+          "counterevidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidateId",
+          "counterevidence"
+        ]
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "toolErrors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "message"
+        ]
+      }
+    }
+  },
+  "required": [
+    "scope",
+    "completeness",
+    "files",
+    "languages",
+    "toolErrors"
+  ]
+}

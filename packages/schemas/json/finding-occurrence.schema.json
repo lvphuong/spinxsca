@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "occurrenceId": {
+      "type": "string"
+    },
+    "findingId": {
+      "type": "string"
+    },
+    "scanId": {
+      "type": "string"
+    },
+    "snapshotId": {
+      "type": "string"
+    },
+    "locations": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "startLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "startColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "symbolKey": {
+            "type": "string"
+          },
+          "role": {
+            "default": "primary",
+            "type": "string",
+            "enum": [
+              "primary",
+              "source",
+              "sink",
+              "guard",
+              "related"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "startLine",
+          "endLine"
+        ]
+      }
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "candidateIds": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "occurrenceId",
+    "findingId",
+    "scanId",
+    "snapshotId",
+    "locations",
+    "fingerprint",
+    "candidateIds",
+    "evidenceIds"
+  ]
+}

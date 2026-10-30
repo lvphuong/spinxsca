@@ -1,0 +1,33 @@
+rules:
+  - id: py-command-injection
+    message: >-
+      Flask request input reaches a shell command. Pass an argument list without shell=True and
+      validate the input against an allow-list.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+      owasp:
+        - "A05:2025 - Injection"
+      confidence: MEDIUM
+      spinxsca:
+        category: COMMAND_INJECTION
+        family: command-injection
+        title: OS command injection from Flask request input
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: flask.request.args
+          - pattern: flask.request.form
+          - pattern: flask.request.values
+          - pattern: flask.request.json
+          - pattern: flask.request.headers
+          - pattern: flask.request.cookies
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: subprocess.$FUNC($CMD, ..., shell=True, ...)
+              - pattern: os.system($CMD)
+              - pattern: os.popen($CMD, ...)
+          - focus-metavariable: $CMD

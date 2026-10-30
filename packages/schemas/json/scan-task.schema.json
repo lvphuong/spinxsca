@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "taskId": {
+      "type": "string"
+    },
+    "scanId": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "SNAPSHOT",
+        "SCANNER",
+        "RECONCILE",
+        "REPORT",
+        "AGENT",
+        "INDEX"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "scannerId": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "SUCCEEDED",
+        "PARTIAL",
+        "FAILED",
+        "CANCELLED",
+        "TIMED_OUT",
+        "SKIPPED"
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "outputDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "FULL",
+            "INCREMENTAL",
+            "TARGETED"
+          ]
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "FAILED"
+          ]
+        },
+        "files": {
+          "type": "object",
+          "properties": {
+            "analyzed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "listDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "analyzed",
+            "total"
+          ]
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "type": "object",
+          "properties": {
+            "executed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "bundleDigests": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "executed",
+            "bundleDigests",
+            "ids"
+          ]
+        },
+        "reviewedSurfaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deferred": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "candidateId": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "candidateId",
+              "reason"
+            ]
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "candidateId": {
+                "type": "string"
+              },
+              "counterevidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "candidateId",
+              "counterevidence"
+            ]
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "toolErrors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool",
+              "message"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "completeness",
+        "files",
+        "languages",
+        "toolErrors"
+      ]
+    },
+    "error": {
+      "type": "string"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    }
+  },
+  "required": [
+    "taskId",
+    "scanId",
+    "kind",
+    "name",
+    "idempotencyKey",
+    "status",
+    "attempt"
+  ]
+}

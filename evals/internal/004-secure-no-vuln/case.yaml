@@ -1,0 +1,13 @@
+id: 004-secure-no-vuln
+title: Secure Express code (negative control)
+description: Parameterized SQL, argument-array process execution and contained file paths. Any finding is a false positive.
+languages: [javascript]
+source: src
+findings: []
+negatives:
+  - path: routes/search.js
+    reason: parameterized query
+  - path: routes/tools.js
+    reason: execFile with argument array and validated input; basename-contained path
+  - path: db.js
+    reason: driver wrapper

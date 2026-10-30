@@ -1,0 +1,26 @@
+id: 008-iac-dockerfile
+title: Container image misconfiguration (mutable base tag, running as root)
+languages: [dockerfile]
+source: src
+findings:
+  - id: GT-1
+    category: INSECURE_CONFIGURATION
+    cwe: [CWE-16]
+    path: Dockerfile
+    lines: [1, 1]
+    severity: MEDIUM
+    detectable_by: [iac]
+    min_phase: 1
+    notes: "trivy DS-0001: ':latest' tag used"
+  - id: GT-2
+    category: INSECURE_CONFIGURATION
+    cwe: [CWE-250]
+    path: Dockerfile
+    lines: [1, 1]
+    severity: HIGH
+    detectable_by: [iac]
+    min_phase: 1
+    notes: "trivy DS-0002: image user should not be root"
+negatives:
+  - path: secure/Dockerfile
+    reason: pinned base image, non-root user, health check

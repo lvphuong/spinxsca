@@ -1,0 +1,20 @@
+id: 002-xss-react
+title: Stored XSS through dangerouslySetInnerHTML with unsanitized user content
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: XSS
+    cwe: [CWE-79]
+    path: components/Profile.jsx
+    lines: [5, 5]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 0
+negatives:
+  - path: components/Profile.jsx
+    lines: [10, 10]
+    reason: HTML sanitized with DOMPurify before rendering
+  - path: components/Profile.jsx
+    lines: [13, 16]
+    reason: text children are escaped by React

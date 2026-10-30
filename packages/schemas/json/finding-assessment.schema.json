@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "assessmentId": {
+      "type": "string"
+    },
+    "findingId": {
+      "type": "string"
+    },
+    "scanId": {
+      "type": "string"
+    },
+    "occurrenceId": {
+      "type": "string"
+    },
+    "reconciliationState": {
+      "type": "string",
+      "enum": [
+        "NEW",
+        "EXISTING",
+        "REOPENED",
+        "RESOLVED",
+        "NOT_REEVALUATED",
+        "NEEDS_RECONCILIATION"
+      ]
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "CONFIRMED",
+        "POTENTIAL",
+        "UNLIKELY",
+        "NOT_EVALUATED"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "exploitability": {
+      "type": "string",
+      "enum": [
+        "CONFIRMED",
+        "POTENTIAL",
+        "UNLIKELY",
+        "UNKNOWN"
+      ]
+    },
+    "verificationLevel": {
+      "type": "string",
+      "enum": [
+        "L1_STATIC",
+        "L2_CONTEXT",
+        "L3_CONTROLLED"
+      ]
+    },
+    "attackPath": {
+      "type": "object",
+      "properties": {
+        "attacker": {
+          "type": "string"
+        },
+        "entryPoint": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "sink": {
+          "type": "string"
+        },
+        "preconditions": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "controls": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "counterevidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missingEvidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reasoningSummary": {
+      "type": "string"
+    },
+    "changeCauses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "CODE_CHANGE",
+          "DEPENDENCY_CHANGE",
+          "NEW_ADVISORY",
+          "ADVISORY_UPDATED",
+          "RULE_ADDED",
+          "RULE_UPDATED",
+          "SCANNER_UPGRADED",
+          "AI_REASSESSMENT",
+          "COVERAGE_CHANGE",
+          "FIRST_SCAN",
+          "UNKNOWN"
+        ]
+      }
+    },
+    "assessedBy": {
+      "type": "string"
+    },
+    "assessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    }
+  },
+  "required": [
+    "assessmentId",
+    "findingId",
+    "scanId",
+    "reconciliationState",
+    "classification",
+    "severity",
+    "confidence",
+    "exploitability",
+    "verificationLevel",
+    "evidenceIds",
+    "counterevidence",
+    "missingEvidence",
+    "reasoningSummary",
+    "changeCauses",
+    "assessedBy",
+    "assessedAt"
+  ]
+}

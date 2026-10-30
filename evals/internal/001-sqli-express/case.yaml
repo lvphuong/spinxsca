@@ -1,0 +1,27 @@
+id: 001-sqli-express
+title: SQL injection via string concatenation and template literal in Express routes
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: SQL_INJECTION
+    cwe: [CWE-89]
+    path: routes/users.js
+    lines: [8, 10]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 0
+  - id: GT-2
+    category: SQL_INJECTION
+    cwe: [CWE-89]
+    path: routes/users.js
+    lines: [22, 22]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 0
+negatives:
+  - path: routes/users.js
+    lines: [15, 18]
+    reason: parameterized query with bound values
+  - path: db.js
+    reason: driver wrapper passes params separately

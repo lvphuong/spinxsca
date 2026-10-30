@@ -1,0 +1,17 @@
+{
+  "name": "@spinxsca/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@spinxsca/core": "workspace:*",
+    "@spinxsca/sandbox": "workspace:*",
+    "@spinxsca/schemas": "workspace:*"
+  }
+}

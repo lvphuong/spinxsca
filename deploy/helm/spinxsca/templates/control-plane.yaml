@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "spinxsca.name" . }}-data
+  labels: {{- include "spinxsca.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.controlPlane.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.controlPlane.persistence.size }}
+---
+# A single replica: the registry and the job queue are SQLite (ADR-034); scale scans with workers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spinxsca.name" . }}
+  labels: {{- include "spinxsca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels: {{- include "spinxsca.labels" . | nindent 8 }}
+        app.kubernetes.io/component: control-plane
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: spinxsca
+          image: {{ include "spinxsca.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --data-dir
+            - /var/lib/spinxsca
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+            - --no-worker
+            - --kb-sync-interval
+            - {{ .Values.controlPlane.kbSyncIntervalMinutes | quote }}
+            {{- if .Values.ingress.tlsSecret }}
+            - --secure-cookies
+            {{- end }}
+            {{- with .Values.controlPlane.publicUrl }}
+            - --public-url
+            - {{ . | quote }}
+            {{- end }}
+            {{- range .Values.notifyUrls }}
+            - --notify-url
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            {{- if .Values.database.existingSecret }}
+            - name: SPINXSCA_DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: DATABASE_URL }
+            {{- end }}
+          {{- with .Values.extraSecret }}
+          envFrom:
+            - secretRef: { name: {{ . }}, optional: true }
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/spinxsca
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "spinxsca.name" . }}-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spinxsca.name" . }}
+  labels: {{- include "spinxsca.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "spinxsca.name" . }}
+  labels: {{- include "spinxsca.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tlsSecret }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecret }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "spinxsca.name" . }}
+                port: { name: http }
+{{- end }}

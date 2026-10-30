@@ -1,0 +1,48 @@
+# Include from your .gitlab-ci.yml:
+#   include:
+#     - project: 'security/spinxsca'
+#       ref: main
+#       file: 'ci/gitlab-ci.spinxsca.yml'
+# Requires a runner with Docker (docker:dind service or a privileged shell runner) and Node 22+.
+spinxsca:
+  stage: test
+  image: node:24-bookworm
+  services:
+    - docker:28-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ''
+    SPINXSCA_REPO: https://gitlab.com/security/spinxsca.git
+    SPINXSCA_REF: main
+    SPINXSCA_FAIL_ON: high
+    SPINXSCA_AI: 'off'
+    GIT_DEPTH: '0'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq docker.io >/dev/null
+    - corepack enable
+    - git clone --depth 1 --branch "$SPINXSCA_REF" "$SPINXSCA_REPO" /opt/spinxsca
+    - cd /opt/spinxsca && pnpm install --frozen-lockfile && pnpm build && pnpm images:pull && cd "$CI_PROJECT_DIR"
+  script:
+    - |
+      CLI="node /opt/spinxsca/apps/cli/dist/index.mjs"
+      ARGS=(scan . --state-dir "$CI_PROJECT_DIR/.spinxsca-ci" --json --fail-on "$SPINXSCA_FAIL_ON")
+      if [ -n "$CI_MERGE_REQUEST_DIFF_BASE_SHA" ]; then ARGS+=(--mode incremental --diff "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --baseline none); fi
+      if [ "$SPINXSCA_AI" != "off" ]; then ARGS+=(--ai "$SPINXSCA_AI"); fi
+      set +e; $CLI "${ARGS[@]}" > scan.json; CODE=$?; set -e
+      $CLI export . --state-dir "$CI_PROJECT_DIR/.spinxsca-ci" --format sarif --out gl-sast-report.sarif
+      $CLI export . --state-dir "$CI_PROJECT_DIR/.spinxsca-ci" --format pr-comment --out mr-comment.md
+      if [ -n "$CI_MERGE_REQUEST_IID" ] && [ -n "$SPINXSCA_MR_TOKEN" ]; then
+        curl -sS --request POST --header "PRIVATE-TOKEN: $SPINXSCA_MR_TOKEN" \
+          --data-urlencode "body@mr-comment.md" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" >/dev/null
+      fi
+      if [ "$CODE" = "2" ]; then exit 2; fi
+      if [ "$CODE" = "1" ]; then echo "spinxsca policy failed"; exit 1; fi
+  artifacts:
+    when: always
+    paths: [scan.json, gl-sast-report.sarif, mr-comment.md]
+    reports:
+      sast: gl-sast-report.sarif

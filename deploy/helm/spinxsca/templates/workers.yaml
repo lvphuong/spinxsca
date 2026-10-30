@@ -1,0 +1,88 @@
+{{- if .Values.workers.enabled }}
+{{- if not .Values.workers.provisioningTokenSecret }}
+{{- fail "workers.provisioningTokenSecret is required when workers.enabled is true" }}
+{{- end }}
+# Each replica registers once (first start) with the provisioning token and keeps its credential and
+# knowledge base replica on its own volume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "spinxsca.name" . }}-worker
+  labels: {{- include "spinxsca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.workers.replicas }}
+  serviceName: {{ include "spinxsca.name" . }}-worker
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels: {{- include "spinxsca.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      initContainers:
+        - name: register
+          image: {{ include "spinxsca.image" . }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              test -f /work/worker.json ||
+              node /opt/spinxsca/apps/cli/dist/index.mjs worker register
+              --server http://{{ include "spinxsca.name" . }}:{{ .Values.service.port }}
+              --provisioning-token "$PROVISIONING_TOKEN" --data-dir /work --name "$HOSTNAME"
+          env:
+            - name: PROVISIONING_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.workers.provisioningTokenSecret }}, key: PROVISIONING_TOKEN }
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        - name: worker
+          image: {{ include "spinxsca.image" . }}
+          args: ["worker", "run", "--data-dir", "/work"]
+          env:
+            {{- if .Values.workers.dind.enabled }}
+            - name: DOCKER_HOST
+              value: tcp://127.0.0.1:2375
+            {{- end }}
+          resources: {{- toYaml .Values.workers.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - name: work
+              mountPath: /work
+        {{- if .Values.workers.dind.enabled }}
+        # Scanner containers mount job checkouts by path, so the daemon sees /work at the same path.
+        - name: dind
+          image: {{ .Values.workers.dind.image }}
+          args: ["--host=tcp://127.0.0.1:2375"]
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: docker
+              mountPath: /var/lib/docker
+        {{- end }}
+      volumes:
+        - name: docker
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: work
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.workers.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.workers.persistence.size }}
+{{- end }}

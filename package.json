@@ -1,0 +1,35 @@
+{
+  "name": "spinxsca",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Spinx SecureCode AI - autonomous AI security code review agent",
+  "type": "module",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "spinxsca": "tsx apps/cli/src/index.ts",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "eval": "tsx apps/cli/src/index.ts eval --suite internal",
+    "schemas:export": "pnpm --filter @spinxsca/schemas run export",
+    "db:generate": "pnpm --filter @spinxsca/storage run db:generate",
+    "images:pin": "tsx scripts/pin-images.ts",
+    "rules:test": "tsx scripts/test-rules.ts",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "images:pull": "tsx scripts/pull-images.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.3",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.10",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

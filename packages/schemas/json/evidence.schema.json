@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "evidenceId": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "CODE_SNIPPET",
+        "DATAFLOW_PATH",
+        "CALL_PATH",
+        "ENDPOINT_CONTEXT",
+        "AUTH_CONTEXT",
+        "SCANNER_RESULT",
+        "PACKAGE_MATCH",
+        "KB_RECORD",
+        "SANDBOX_RUN",
+        "TOOL_OUTPUT"
+      ]
+    },
+    "producedBy": {
+      "type": "string"
+    },
+    "snapshotId": {
+      "type": "string"
+    },
+    "locations": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "startLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "startColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "symbolKey": {
+            "type": "string"
+          },
+          "role": {
+            "default": "primary",
+            "type": "string",
+            "enum": [
+              "primary",
+              "source",
+              "sink",
+              "guard",
+              "related"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "startLine",
+          "endLine"
+        ]
+      }
+    },
+    "excerpt": {
+      "type": "string"
+    },
+    "payloadDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "evidenceId",
+    "kind",
+    "producedBy",
+    "snapshotId",
+    "summary"
+  ]
+}

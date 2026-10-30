@@ -1,0 +1,25 @@
+id: 010-ssrf-express
+title: Server-side request forgery in webhook and preview endpoints
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: SSRF
+    cwe: [CWE-918]
+    path: routes/webhooks.js
+    lines: [8, 8]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 1
+  - id: GT-2
+    category: SSRF
+    cwe: [CWE-918]
+    path: routes/webhooks.js
+    lines: [14, 15]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 1
+negatives:
+  - path: routes/webhooks.js
+    lines: [20, 23]
+    reason: constant host, input only as a query parameter

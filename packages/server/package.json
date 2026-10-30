@@ -1,0 +1,28 @@
+{
+  "name": "@spinxsca/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.5",
+    "@spinxsca/core": "workspace:*",
+    "@spinxsca/kb": "workspace:*",
+    "@spinxsca/reporting": "workspace:*",
+    "@spinxsca/schemas": "workspace:*",
+    "@spinxsca/storage": "workspace:*",
+    "better-sqlite3": "^13.0.3",
+    "hono": "4.13.14",
+    "pg": "8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/pg": "8.23.1"
+  }
+}

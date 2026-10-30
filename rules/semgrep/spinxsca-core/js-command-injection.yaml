@@ -1,0 +1,48 @@
+rules:
+  - id: js-command-injection
+    message: >-
+      HTTP request input reaches a shell command. Use execFile/spawn with an argument array and no
+      shell, and validate the input against an allow-list.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+      owasp:
+        - "A05:2025 - Injection"
+      confidence: MEDIUM
+      spinxsca:
+        category: COMMAND_INJECTION
+        family: command-injection
+        title: OS command injection from HTTP request input
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.headers
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: require('child_process').exec($CMD, ...)
+              - pattern: require('child_process').execSync($CMD, ...)
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+              - pattern: |
+                  $CP.spawn($CMD, ..., {..., shell: true, ...})
+          - metavariable-regex:
+              metavariable: $CP
+              regex: ^(child_process|childProcess|cp)$
+          - focus-metavariable: $CMD
+      - patterns:
+          - pattern-either:
+              - pattern: exec($CMD, ...)
+              - pattern: execSync($CMD, ...)
+          - focus-metavariable: $CMD

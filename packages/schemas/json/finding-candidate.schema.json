@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "candidateId": {
+      "type": "string"
+    },
+    "scanId": {
+      "type": "string"
+    },
+    "scanTaskId": {
+      "type": "string"
+    },
+    "scanner": {
+      "type": "string"
+    },
+    "ruleId": {
+      "type": "string"
+    },
+    "ruleFamily": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "SQL_INJECTION",
+        "NOSQL_INJECTION",
+        "COMMAND_INJECTION",
+        "CODE_INJECTION",
+        "XSS",
+        "PATH_TRAVERSAL",
+        "SSRF",
+        "OPEN_REDIRECT",
+        "XXE",
+        "INSECURE_DESERIALIZATION",
+        "MISSING_AUTHENTICATION",
+        "MISSING_AUTHORIZATION",
+        "BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        "TENANT_ISOLATION",
+        "HARDCODED_SECRET",
+        "WEAK_CRYPTO",
+        "INSECURE_RANDOMNESS",
+        "CSRF",
+        "INSECURE_CONFIGURATION",
+        "VULNERABLE_DEPENDENCY",
+        "RACE_CONDITION",
+        "BUSINESS_LOGIC",
+        "PROTOTYPE_POLLUTION",
+        "LOG_INJECTION",
+        "SENSITIVE_DATA_EXPOSURE",
+        "OTHER"
+      ]
+    },
+    "cwe": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^CWE-\\d+$"
+      }
+    },
+    "title": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "severityHint": {
+      "type": "string",
+      "enum": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO"
+      ]
+    },
+    "confidenceHint": {
+      "type": "string",
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "locations": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "startLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endLine": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "startColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endColumn": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "symbolKey": {
+            "type": "string"
+          },
+          "role": {
+            "default": "primary",
+            "type": "string",
+            "enum": [
+              "primary",
+              "source",
+              "sink",
+              "guard",
+              "related"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "startLine",
+          "endLine"
+        ]
+      }
+    },
+    "package": {
+      "type": "object",
+      "properties": {
+        "purl": {
+          "type": "string"
+        },
+        "ecosystem": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "manifestPath": {
+          "type": "string"
+        },
+        "direct": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "purl",
+        "ecosystem",
+        "name",
+        "version",
+        "manifestPath",
+        "direct"
+      ]
+    },
+    "vulnerabilityIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fingerprints": {
+      "type": "object",
+      "properties": {
+        "scanner": {
+          "type": "string"
+        },
+        "semantic": {
+          "type": "string"
+        },
+        "algorithm": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "semantic",
+        "algorithm"
+      ]
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "candidateId",
+    "scanId",
+    "scanTaskId",
+    "scanner",
+    "ruleId",
+    "ruleFamily",
+    "category",
+    "cwe",
+    "title",
+    "message",
+    "severityHint",
+    "confidenceHint",
+    "locations",
+    "fingerprints",
+    "evidenceIds"
+  ]
+}

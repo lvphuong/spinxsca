@@ -1,0 +1,39 @@
+# Single-node deployment of the spinxsca service (ADR-034).
+#
+#   docker compose -f deploy/docker-compose.yml build
+#   docker compose -f deploy/docker-compose.yml run --rm spinxsca server init --data-dir /var/lib/spinxsca
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Security notes:
+# - Mounting the Docker socket gives this container control of the host's Docker daemon (root
+#   equivalent). Run it on a dedicated host or VM, never on a shared developer machine.
+# - Scanner containers are started by the host daemon and mount job checkouts by host path, so
+#   /var/lib/spinxsca must be the same path on the host and in the container.
+# - Expose the service only behind a TLS reverse proxy; --secure-cookies marks the session cookie Secure.
+services:
+  spinxsca:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: spinxsca:local
+    restart: unless-stopped
+    command:
+      - serve
+      - --data-dir
+      - /var/lib/spinxsca
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --secure-cookies
+      - --kb-sync-interval
+      - "30"
+    environment:
+      # Optional: higher NVD rate limits and signed outgoing notifications.
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      SPINXSCA_NOTIFY_SECRET: ${SPINXSCA_NOTIFY_SECRET:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/lib/spinxsca:/var/lib/spinxsca
+      - /var/run/docker.sock:/var/run/docker.sock

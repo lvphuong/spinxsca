@@ -1,0 +1,27 @@
+rules:
+  - id: react-dangerously-set-inner-html
+    message: >-
+      Non-constant HTML is rendered with dangerouslySetInnerHTML. If it can contain user content this
+      is cross-site scripting; sanitize it (for example DOMPurify.sanitize) or render text instead.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+      owasp:
+        - "A05:2025 - Injection"
+      confidence: MEDIUM
+      spinxsca:
+        category: XSS
+        family: xss-html-sink
+        title: Unsanitized HTML rendered with dangerouslySetInnerHTML
+    patterns:
+      - pattern: |
+          <$EL dangerouslySetInnerHTML={{__html: $X}} />
+      - metavariable-pattern:
+          metavariable: $X
+          patterns:
+            - pattern-not: DOMPurify.sanitize(...)
+            - pattern-not: sanitize(...)
+            - pattern-not: |
+                "..."

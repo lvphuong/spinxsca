@@ -1,0 +1,45 @@
+rules:
+  - id: js-path-traversal
+    message: >-
+      HTTP request input is used to build a filesystem path. An attacker can use "../" sequences or
+      absolute paths to read or write files outside the intended directory. Reduce the input to a
+      file name (path.basename), resolve it against a fixed root and verify the result stays inside it.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+      owasp:
+        - "A01:2025 - Broken Access Control"
+      confidence: MEDIUM
+      spinxsca:
+        category: PATH_TRAVERSAL
+        family: path-traversal
+        title: Path traversal from HTTP request input
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+    pattern-sanitizers:
+      - pattern: path.basename(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $FS.$METHOD($PATH, ...)
+              - pattern: $RES.sendFile($PATH, ...)
+              - pattern: $RES.download($PATH, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(readFile|readFileSync|createReadStream|writeFile|writeFileSync|appendFile|unlink|unlinkSync|readdir|readdirSync|rm|rmSync)$
+          - focus-metavariable: $PATH
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.sendFile($PATH, ...)
+              - pattern: $RES.download($PATH, ...)
+          - focus-metavariable: $PATH

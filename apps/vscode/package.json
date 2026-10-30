@@ -1,0 +1,117 @@
+{
+  "name": "spinxsca-vscode",
+  "displayName": "spinxsca security review",
+  "description": "Findings from spinxsca (SAST, SCA, secrets, IaC, AI review) inline in the editor; explain and fix with verification.",
+  "version": "0.4.0",
+  "publisher": "spinx",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "spinxsca runs local scanners and an AI agent over the workspace; it only runs in trusted workspaces."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "spinxsca.scanWorkspace",
+        "title": "Scan workspace",
+        "category": "spinxsca"
+      },
+      {
+        "command": "spinxsca.scanFile",
+        "title": "Scan current file",
+        "category": "spinxsca"
+      },
+      {
+        "command": "spinxsca.refresh",
+        "title": "Refresh findings",
+        "category": "spinxsca"
+      },
+      {
+        "command": "spinxsca.explainFinding",
+        "title": "Explain finding",
+        "category": "spinxsca"
+      },
+      {
+        "command": "spinxsca.fixFinding",
+        "title": "Propose a verified fix",
+        "category": "spinxsca"
+      },
+      {
+        "command": "spinxsca.setServerToken",
+        "title": "Set server API token",
+        "category": "spinxsca"
+      }
+    ],
+    "configuration": {
+      "title": "spinxsca",
+      "properties": {
+        "spinxsca.mode": {
+          "type": "string",
+          "enum": [
+            "local",
+            "server"
+          ],
+          "default": "local",
+          "description": "local: run the spinxsca CLI on this machine. server: show findings of this branch from a spinxsca server."
+        },
+        "spinxsca.cliPath": {
+          "type": "string",
+          "default": "spinxsca",
+          "scope": "machine",
+          "description": "spinxsca executable. Machine scope: a repository cannot change it through workspace settings."
+        },
+        "spinxsca.server.url": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "spinxsca server base URL (server mode)."
+        },
+        "spinxsca.server.projectId": {
+          "type": "string",
+          "default": "",
+          "description": "Server project id of this workspace (server mode)."
+        },
+        "spinxsca.minSeverity": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ],
+          "default": "low",
+          "description": "Findings below this severity are not shown."
+        },
+        "spinxsca.scanOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run a targeted scan of a file when it is saved (local mode)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/vscode": "1.100.0",
+    "tsdown": "^0.23.3"
+  }
+}

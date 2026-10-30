@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "adapterVersion": {
+      "type": "string"
+    },
+    "toolVersion": {
+      "type": "string"
+    },
+    "image": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "SAST",
+          "SCA",
+          "SECRETS",
+          "IAC"
+        ]
+      }
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scanModes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "FULL",
+          "INCREMENTAL",
+          "TARGETED"
+        ]
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "SARIF",
+          "NATIVE_JSON"
+        ]
+      }
+    },
+    "requiresNetwork": {
+      "type": "boolean"
+    },
+    "requiresBuild": {
+      "type": "boolean"
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpus": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "memoryMb": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "cpus",
+        "memoryMb",
+        "timeoutSec"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "adapterVersion",
+    "toolVersion",
+    "image",
+    "capabilities",
+    "languages",
+    "scanModes",
+    "outputs",
+    "requiresNetwork",
+    "requiresBuild",
+    "resources"
+  ]
+}

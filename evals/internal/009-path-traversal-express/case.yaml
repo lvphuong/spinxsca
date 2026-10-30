@@ -1,0 +1,25 @@
+id: 009-path-traversal-express
+title: Path traversal through Express file routes
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: PATH_TRAVERSAL
+    cwe: [CWE-22]
+    path: routes/files.js
+    lines: [10, 10]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 1
+  - id: GT-2
+    category: PATH_TRAVERSAL
+    cwe: [CWE-22]
+    path: routes/files.js
+    lines: [15, 16]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 1
+negatives:
+  - path: routes/files.js
+    lines: [23, 27]
+    reason: basename plus containment check

@@ -1,0 +1,53 @@
+image:
+  repository: spinxsca
+  tag: local
+  pullPolicy: IfNotPresent
+
+controlPlane:
+  # Scans run on workers; the control plane serves the API/UI and refreshes the knowledge base.
+  kbSyncIntervalMinutes: 30
+  publicUrl: ""
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: "2", memory: 4Gi }
+
+# Optional PostgreSQL for project state (one schema per project). Name of a Secret with key DATABASE_URL.
+database:
+  existingSecret: ""
+
+# Optional Secret with NVD_API_KEY and/or SPINXSCA_NOTIFY_SECRET.
+extraSecret: ""
+notifyUrls: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  host: spinxsca.example.com
+  tlsSecret: ""
+
+workers:
+  enabled: false
+  replicas: 1
+  pool: default
+  # Secret with key PROVISIONING_TOKEN, issued with:
+  #   spinxsca server provision-worker --data-dir /var/lib/spinxsca --pool default --uses <replicas> --ttl 1440
+  provisioningTokenSecret: ""
+  persistence:
+    size: 50Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: "2", memory: 4Gi }
+    limits: { cpu: "4", memory: 8Gi }
+  # Scanners run as containers. Inside Kubernetes this needs a Docker-in-Docker sidecar, which is
+  # PRIVILEGED. Prefer workers on dedicated VMs (`spinxsca worker run`) unless the cluster isolates
+  # this namespace (dedicated nodes, no other workloads).
+  dind:
+    enabled: true
+    image: docker:28-dind

@@ -1,0 +1,25 @@
+id: 006-cmdi-python
+title: OS command injection in Flask handlers
+languages: [python]
+source: src
+findings:
+  - id: GT-1
+    category: COMMAND_INJECTION
+    cwe: [CWE-78]
+    path: app.py
+    lines: [11, 13]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 0
+  - id: GT-2
+    category: COMMAND_INJECTION
+    cwe: [CWE-78]
+    path: app.py
+    lines: [19, 20]
+    severity: HIGH
+    detectable_by: [sast, ai]
+    min_phase: 0
+negatives:
+  - path: app.py
+    lines: [24, 28]
+    reason: argument list without a shell

@@ -1,0 +1,21 @@
+id: 003-idor-nest
+title: Broken object level authorization (IDOR) in a NestJS controller
+description: >-
+  Authentication is enforced by a global guard, but GET /orders/:id never checks that the order
+  belongs to the caller. Pattern scanners do not detect this; it is the reference case for the
+  architecture-aware AI investigation planned for phase 2.
+languages: [typescript]
+source: src
+findings:
+  - id: GT-1
+    category: BROKEN_OBJECT_LEVEL_AUTHORIZATION
+    cwe: [CWE-639]
+    path: orders/orders.controller.ts
+    lines: [11, 15]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 2
+negatives:
+  - path: orders/orders.controller.ts
+    lines: [17, 20]
+    reason: query scoped to the authenticated owner

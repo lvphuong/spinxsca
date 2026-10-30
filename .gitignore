@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+
+# spinxsca local state and outputs
+.spinxsca/
+evals/results/
+
+docs/

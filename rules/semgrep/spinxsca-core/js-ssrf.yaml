@@ -1,0 +1,44 @@
+rules:
+  - id: js-ssrf
+    message: >-
+      HTTP request input controls the URL of a server-side request. An attacker can make the server
+      call internal services or cloud metadata endpoints. Allow only known hosts, resolve and block
+      private address ranges, and never pass a raw user-supplied URL to the HTTP client.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-918: Server-Side Request Forgery (SSRF)"
+      owasp:
+        - "A01:2025 - Broken Access Control"
+      confidence: MEDIUM
+      spinxsca:
+        category: SSRF
+        family: ssrf
+        title: Server-side request forgery from HTTP request input
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.headers
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: axios.$METHOD($URL, ...)
+              - pattern: axios($URL, ...)
+              - pattern: fetch($URL, ...)
+              - pattern: got($URL, ...)
+              - pattern: got.$METHOD($URL, ...)
+              - pattern: needle.$METHOD($URL, ...)
+              - pattern: superagent.$METHOD($URL, ...)
+              - pattern: http.get($URL, ...)
+              - pattern: http.request($URL, ...)
+              - pattern: https.get($URL, ...)
+              - pattern: https.request($URL, ...)
+          - focus-metavariable: $URL

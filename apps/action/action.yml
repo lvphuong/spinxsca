@@ -1,0 +1,127 @@
+name: spinxsca security review
+description: Incremental security review of a pull request with spinxsca (SAST, SCA, secrets, IaC; optional AI validation).
+branding:
+  icon: shield
+  color: purple
+inputs:
+  path:
+    description: Directory to scan (relative to the workspace).
+    default: .
+  diff-base:
+    description: Git ref to compute the change impact against. Default is the pull request base, or none for pushes.
+    default: ''
+  fail-on:
+    description: Fail the job when a new finding at or above this severity is present (critical, high, medium, low).
+    default: high
+  ai:
+    description: AI level: off, explain or standard. Needs ANTHROPIC_API_KEY in env.
+    default: off
+  max-cost:
+    description: AI budget in USD per scan.
+    default: '5'
+  spinxsca-ref:
+    description: Git ref of the spinxsca repository to build the CLI from.
+    default: main
+  spinxsca-repository:
+    description: Repository that hosts spinxsca (owner/name).
+    required: true
+  upload-sarif:
+    description: Upload SARIF to GitHub code scanning (needs security-events write).
+    default: 'true'
+  comment:
+    description: Post or update a pull request comment with the result (needs pull-requests write).
+    default: 'true'
+outputs:
+  scan-id:
+    description: Scan id.
+    value: ${{ steps.scan.outputs.scan-id }}
+  new-findings:
+    description: Number of new findings.
+    value: ${{ steps.scan.outputs.new-findings }}
+  policy-status:
+    description: passed or failed.
+    value: ${{ steps.scan.outputs.policy-status }}
+  sarif:
+    description: Path of the SARIF report.
+    value: ${{ steps.scan.outputs.sarif }}
+runs:
+  using: composite
+  steps:
+    - name: Check out spinxsca
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.spinxsca-repository }}
+        ref: ${{ inputs.spinxsca-ref }}
+        path: .spinxsca-action
+        persist-credentials: false
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        package_json_file: .spinxsca-action/package.json
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .spinxsca-action/.nvmrc
+    - name: Build spinxsca
+      shell: bash
+      working-directory: .spinxsca-action
+      run: |
+        pnpm install --frozen-lockfile
+        pnpm build
+        pnpm images:pull
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SPINXSCA_DIFF_BASE: ${{ inputs.diff-base != '' && inputs.diff-base || (github.event.pull_request.base.sha || '') }}
+        SPINXSCA_PATH: ${{ inputs.path }}
+        SPINXSCA_FAIL_ON: ${{ inputs.fail-on }}
+        SPINXSCA_AI: ${{ inputs.ai }}
+        SPINXSCA_MAX_COST: ${{ inputs.max-cost }}
+      run: |
+        set -o pipefail
+        CLI="node $GITHUB_WORKSPACE/.spinxsca-action/apps/cli/dist/index.mjs"
+        ARGS=(scan "$SPINXSCA_PATH" --state-dir "$RUNNER_TEMP/spinxsca-state" --json --fail-on "$SPINXSCA_FAIL_ON")
+        if [ -n "$SPINXSCA_DIFF_BASE" ]; then
+          git fetch --no-tags --depth=1 origin "$SPINXSCA_DIFF_BASE" || true
+          ARGS+=(--mode incremental --diff "$SPINXSCA_DIFF_BASE" --baseline none)
+        fi
+        if [ "$SPINXSCA_AI" != "off" ]; then ARGS+=(--ai "$SPINXSCA_AI" --max-cost "$SPINXSCA_MAX_COST"); fi
+        set +e
+        $CLI "${ARGS[@]}" > "$RUNNER_TEMP/scan.json"
+        CODE=$?
+        set -e
+        node -e '
+          const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          const fresh = r.findings.filter((f) => ["NEW", "REOPENED", "NEEDS_RECONCILIATION"].includes(f.state)).length;
+          const out = [`scan-id=${r.scanId}`, `new-findings=${fresh}`, `policy-status=${r.policy.passed ? "passed" : "failed"}`, `sarif=${r.reports.sarif ?? ""}`];
+          require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+        ' "$RUNNER_TEMP/scan.json"
+        $CLI export "$SPINXSCA_PATH" --state-dir "$RUNNER_TEMP/spinxsca-state" --format pr-comment --out "$RUNNER_TEMP/pr-comment.md"
+        echo "exit-code=$CODE" >> "$GITHUB_OUTPUT"
+        # 1 = policy failed (reported below), 2 = execution error, 3 = partial coverage when required.
+        if [ "$CODE" = "2" ]; then exit 2; fi
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.sarif != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: spinxsca
+    - name: Pull request comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        BODY="$RUNNER_TEMP/pr-comment.md"
+        EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.body | startswith("<!-- spinxsca -->")) | .id' | head -1)
+        if [ -n "$EXISTING" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -F body=@"$BODY" >/dev/null
+        else
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$BODY" >/dev/null
+        fi
+    - name: Enforce policy
+      if: steps.scan.outputs.policy-status == 'failed'
+      shell: bash
+      run: |
+        echo "::error::spinxsca policy failed: new findings at or above ${{ inputs.fail-on }}"
+        exit 1

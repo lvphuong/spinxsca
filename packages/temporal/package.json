@@ -1,0 +1,24 @@
+{
+  "name": "@spinxsca/temporal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@spinxsca/core": "workspace:*",
+    "@spinxsca/server": "workspace:*",
+    "@temporalio/activity": "1.25.0",
+    "@temporalio/client": "1.25.0",
+    "@temporalio/common": "1.25.0",
+    "@temporalio/worker": "1.25.0",
+    "@temporalio/workflow": "1.25.0"
+  },
+  "devDependencies": {
+    "@spinxsca/kb": "workspace:*"
+  }
+}

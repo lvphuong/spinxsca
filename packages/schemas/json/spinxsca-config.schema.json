@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "project": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "scan": {
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scanners": {
+          "type": "object",
+          "properties": {
+            "semgrep": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "rule_dirs": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "fail_on_severity": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ]
+        },
+        "new_findings_only": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "formats": {
+          "default": [
+            "sarif",
+            "md",
+            "json"
+          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "sarif",
+              "md",
+              "json"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "additionalProperties": false
+}
