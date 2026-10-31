@@ -1,8 +1,6 @@
 # Include from your .gitlab-ci.yml:
 #   include:
-#     - project: 'security/spinxsca'
-#       ref: main
-#       file: 'ci/gitlab-ci.spinxsca.yml'
+#     - remote: 'https://raw.githubusercontent.com/lvphuong/spinxsca/main/ci/gitlab-ci.spinxsca.yml'
 # Requires a runner with Docker (docker:dind service or a privileged shell runner) and Node 22+.
 spinxsca:
   stage: test
@@ -12,7 +10,7 @@ spinxsca:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ''
-    SPINXSCA_REPO: https://gitlab.com/security/spinxsca.git
+    SPINXSCA_REPO: https://github.com/lvphuong/spinxsca.git
     SPINXSCA_REF: main
     SPINXSCA_FAIL_ON: high
     SPINXSCA_AI: 'off'
