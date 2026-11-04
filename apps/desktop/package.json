@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run --config vitest.config.ts",
     "e2e": "playwright test",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sidecar:stage": "node scripts/stage-sidecar.mjs",
+    "release:mac": "bash scripts/build-macos.sh",
+    "release:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

@@ -78,7 +78,7 @@ fn sidecar_command(resources: &Path, data_dir: &Path, port: u16) -> (PathBuf, Ve
         }
         _ => {
             let node = if cfg!(windows) { "node.exe" } else { "bin/node" };
-            (resources.join("sidecar").join("node").join(node), vec![resources.join("sidecar").join("cli").join("index.mjs").display().to_string()])
+            (resources.join("sidecar").join("node").join(node), vec![resources.join("sidecar").join("cli").join("dist").join("index.mjs").display().to_string()])
         }
     };
     args.extend([

@@ -1,8 +1,9 @@
 name: desktop-release
 
-# Builds the desktop app (ADR-048) for macOS, Windows and Linux. Bundles are unsigned unless the
-# signing secrets exist: Apple code signing and notarization, Windows signing via a cert, and the
-# minisign key of the updater. Without them the job still produces installable, unsigned bundles.
+# Builds the desktop app (ADR-048) for macOS, Windows and Linux with apps/desktop/scripts/*. macOS is
+# signed and notarized when the Apple secrets exist (build-macos.sh), Windows is built unsigned
+# (build-windows.ps1), and the updater archives are signed when the minisign key exists. Without
+# secrets every job still produces installable, unsigned bundles.
 on:
   workflow_dispatch:
   push:
@@ -19,8 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          # Both macOS targets build on Apple Silicon; x64 is cross-compiled (no smoke test of the sidecar).
+          - { os: macos-15, target: aarch64-apple-darwin, arch: arm64 }
+          - { os: macos-15, target: x86_64-apple-darwin, arch: x64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
@@ -46,15 +48,22 @@ jobs:
           pnpm --filter @spinxsca/desktop typecheck
           pnpm --filter @spinxsca/desktop test
           cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
-      - name: Build the CLI and stage the sidecar
-        run: pnpm build && node apps/desktop/scripts/stage-sidecar.mjs
-      - name: Build bundles
-        working-directory: apps/desktop
+      - name: Debug build (pull requests)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          pnpm build
+          node apps/desktop/scripts/stage-sidecar.mjs --target ${{ matrix.target }}
+          cd apps/desktop && pnpm tauri build --debug --bundles none --no-sign --target ${{ matrix.target }}
+      - name: Build, sign and notarize (macOS)
+        if: github.event_name != 'pull_request' && runner.os == 'macOS'
         env:
-          # Read by the Tauri CLI only when present; empty values leave the bundles unsigned.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -62,16 +71,43 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
-          args=(build --target ${{ matrix.target }})
-          if [ "${{ github.event_name }}" = "pull_request" ]; then args+=(--debug --bundles none); fi
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          args=(--arch ${{ matrix.arch }})
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            args+=(--unsigned)
+          else
+            if [ -n "$APPLE_API_KEY_P8" ]; then
+              export APPLE_API_KEY_PATH="$RUNNER_TEMP/notary-key.p8"
+              printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY_PATH"
+            fi
+            if [ -z "${APPLE_API_KEY_PATH:-}" ] && [ -z "$APPLE_ID" ]; then args+=(--no-notarize); fi
           fi
-          pnpm tauri "${args[@]}"
+          apps/desktop/scripts/build-macos.sh "${args[@]}"
+      - name: Build (Windows)
+        if: github.event_name != 'pull_request' && runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: ./apps/desktop/scripts/build-windows.ps1
+      - name: Build (Linux)
+        if: github.event_name != 'pull_request' && runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          pnpm build
+          node apps/desktop/scripts/stage-sidecar.mjs --target ${{ matrix.target }}
+          args=(build --target ${{ matrix.target }})
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}'); fi
+          cd apps/desktop && pnpm tauri "${args[@]}"
       - name: Upload bundles
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: spinxsca-desktop-${{ matrix.target }}
-          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**
+          path: |
+            apps/desktop/release/**
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*
           if-no-files-found: error
