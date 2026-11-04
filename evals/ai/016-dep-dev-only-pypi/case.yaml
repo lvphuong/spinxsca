@@ -1,0 +1,11 @@
+id: 016-dep-dev-only-pypi
+title: Vulnerable requests pinned only for development, never imported
+source: src
+expect:
+  findings:
+    - id: GT-1
+      category: VULNERABLE_DEPENDENCY
+      path: requirements-dev.txt
+      vulnerability_id: PYSEC-2018-28
+      applicability: NOT_AFFECTED
+      max_severity: LOW

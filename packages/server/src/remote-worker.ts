@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { arch, cpus, freemem, hostname, platform, totalmem } from 'node:os';
 import { join } from 'node:path';
-import type { ArtifactStore, Logger, ScanRepository } from '@spinxsca/core';
+import type { ArtifactStore, CaseRepository, Logger, ScanRepository } from '@spinxsca/core';
 import { importBundle, KbStore } from '@spinxsca/kb';
 import type { ArtifactRef, Digest } from '@spinxsca/schemas';
 import { type EngineFactory, executeJob } from './execute';
 import type { JobEntry, ProjectEntry } from './registry';
-import { decode, encode, REPOSITORY_METHODS } from './rpc';
+import { decode, encode, REPOSITORY_METHODS, workerMayCall } from './rpc';
 import { ProjectWorkspace } from './workspace';
 
 export interface RemoteWorkerConfig {
@@ -126,6 +126,7 @@ export class RemoteWorker {
     );
     try {
       const repo = this.repository(job);
+      const cases = this.cases(job);
       const result = await executeJob(
         job,
         { ...project, webhookSecret: '' },
@@ -137,8 +138,10 @@ export class RemoteWorker {
               stateDir: join(this.o.dataDir, 'state', projectId),
               repo,
               artifacts: this.artifacts(job),
+              cases,
             }),
           repository: () => repo,
+          cases: () => cases,
           prepareKnowledgeBase: (snapshotId) => this.syncKnowledgeBase(snapshotId),
           signal: abort.signal,
         },
@@ -213,6 +216,27 @@ export class RemoteWorker {
     return new Proxy({} as ScanRepository, {
       get: (_target, prop) => {
         if (typeof prop !== 'string' || !REPOSITORY_METHODS.has(prop)) return undefined;
+        return (...args: unknown[]) => call(prop, args);
+      },
+    });
+  }
+
+  /** Case store over the control plane; human decisions are not reachable from here. */
+  private cases(job: JobEntry): CaseRepository {
+    const call = async (method: string, args: unknown[]) => {
+      const res = await this.request(
+        'POST',
+        `/v1/worker/jobs/${job.jobId}/cases`,
+        encode({ method, args }),
+        job.fencing,
+      );
+      if (res.status === 409) throw new LeaseLost();
+      if (!res.ok) throw new Error(`case store ${method}: HTTP ${res.status} ${await res.text()}`);
+      return decode<{ result: unknown }>(await res.text()).result;
+    };
+    return new Proxy({} as CaseRepository, {
+      get: (_target, prop) => {
+        if (typeof prop !== 'string' || !workerMayCall(prop)) return undefined;
         return (...args: unknown[]) => call(prop, args);
       },
     });

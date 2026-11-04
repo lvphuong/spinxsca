@@ -75,7 +75,7 @@ export class Worker {
 
   /** Claims and runs one job; returns it, or undefined when nothing is ready. */
   async runOnce(): Promise<JobEntry | undefined> {
-    const kinds: JobKind[] = ['SCAN', 'REASSESS', 'KB_SYNC'];
+    const kinds: JobKind[] = ['SCAN', 'REASSESS', 'KB_SYNC', 'REVIEW', 'CASE_RESUME'];
     const pools = this.o.pools ?? ['default', CONTROL_POOL];
     if (pools.length === 0) return undefined;
     const job = this.o.registry.claim(this.o.clock.now(), this.leaseMs, { pools, kinds, workerId: LOCAL_WORKER });
@@ -140,9 +140,11 @@ export class Worker {
           stateDir: this.o.workspace.paths(projectId).state,
           repo: state.repo,
           artifacts: state.artifacts,
+          cases: state.cases,
         });
       },
       repository: (projectId) => this.o.states.get(projectId).repo,
+      cases: (projectId) => this.o.states.get(projectId).cases,
       signal,
     });
   }

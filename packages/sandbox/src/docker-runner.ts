@@ -8,6 +8,7 @@ import type {
   SandboxRunner,
 } from '@spinxsca/core';
 import { silentLogger } from '@spinxsca/core';
+import { isPinnedImage, PROFILES } from './profiles';
 
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 
@@ -15,6 +16,10 @@ export interface DockerSandboxOptions {
   dockerBin?: string;
   /** Optional custom seccomp profile path; Docker's default allow-list profile is used otherwise. */
   seccompProfile?: string;
+  /** Optional OCI runtime, e.g. "runsc" (gVisor) for stronger isolation of validation runs. */
+  runtime?: string;
+  /** Apply `runtime` only to these profiles (default: validation and patch). */
+  runtimeProfiles?: readonly SandboxProfile[];
   logger?: Logger;
 }
 
@@ -33,32 +38,26 @@ export class DockerSandboxRunner implements SandboxRunner {
     this.logger = options.logger ?? silentLogger;
   }
 
-  /** The hardening flags shared by every profile. Exposed for tests and preflight. */
+  /** The hardening flags of a profile (ADR-043). Exposed for tests and preflight. */
   hardeningArgs(profile: SandboxProfile): string[] {
-    const args = [
-      '--network',
-      'none',
-      '--cap-drop',
-      'ALL',
-      '--security-opt',
-      'no-new-privileges',
-      '--read-only',
-      '--tmpfs',
-      '/tmp:rw,nosuid,nodev,size=1g',
-      '--user',
-      containerUser(),
-    ];
+    const spec = PROFILES[profile];
+    const args = ['--network', 'none', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only'];
+    for (const tmpfs of spec.tmpfs) args.push('--tmpfs', tmpfs);
+    for (const ulimit of spec.ulimits) args.push('--ulimit', ulimit);
+    args.push('--user', containerUser());
     if (this.options.seccompProfile) args.push('--security-opt', `seccomp=${this.options.seccompProfile}`);
-    // validation and patch profiles get dedicated writable workspaces in later phases; the network
-    // stays disabled for all of them.
-    void profile;
+    const runtimeProfiles = this.options.runtimeProfiles ?? ['validation', 'patch'];
+    if (this.options.runtime && runtimeProfiles.includes(profile)) args.push('--runtime', this.options.runtime);
     return args;
   }
 
   buildRunArgs(spec: ContainerRunSpec): string[] {
+    if (!isPinnedImage(spec.image)) throw new Error(`refusing to run unpinned image ${spec.image}`);
+    const limits = PROFILES[spec.profile].resources;
     const args = ['run', '--rm', '--name', spec.name, ...this.hardeningArgs(spec.profile)];
-    args.push('--pids-limit', String(spec.resources.pidsLimit ?? 512));
-    args.push('--memory', `${spec.resources.memoryMb}m`, '--cpus', String(spec.resources.cpus));
+    args.push('--pids-limit', String(Math.min(spec.resources.pidsLimit ?? limits.pidsLimit, limits.pidsLimit * 4)));
+    args.push('--memory', `${spec.resources.memoryMb}m`, '--memory-swap', `${spec.resources.memoryMb}m`);
+    args.push('--cpus', String(spec.resources.cpus));
     args.push('--workdir', spec.workdir);
     for (const mount of spec.mounts) {
       if (mount.hostPath.includes(',')) throw new Error(`mount path must not contain commas: ${mount.hostPath}`);
@@ -101,7 +100,7 @@ export class DockerSandboxRunner implements SandboxRunner {
    * Verifies the runtime is reachable and reads back the effective configuration of a container
    * created with the scan profile, so a misconfigured daemon cannot silently weaken isolation.
    */
-  async preflight(image: string): Promise<SandboxPreflight> {
+  async preflight(image: string, profile: SandboxProfile = 'scan'): Promise<SandboxPreflight> {
     const checks: SandboxPreflight['checks'] = [];
     const version = await exec(this.docker, ['version', '--format', '{{.Server.Version}}']).catch((err: Error) => ({
       exitCode: 1,
@@ -124,7 +123,14 @@ export class DockerSandboxRunner implements SandboxRunner {
 
     if (present.exitCode === 0) {
       const name = `spinxsca-preflight-${process.pid}-${Date.now()}`;
-      const created = await exec(this.docker, ['create', '--name', name, ...this.hardeningArgs('scan'), image, 'true']);
+      const created = await exec(this.docker, [
+        'create',
+        '--name',
+        name,
+        ...this.hardeningArgs(profile),
+        image,
+        'true',
+      ]);
       if (created.exitCode === 0) {
         const inspected = await exec(this.docker, ['inspect', '--format', '{{json .HostConfig}}', name]);
         await exec(this.docker, ['rm', '-f', name]);

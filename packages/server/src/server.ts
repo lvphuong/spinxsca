@@ -44,7 +44,17 @@ export interface ServerOptions {
   /** PostgreSQL for project state (one schema per project); default is a SQLite file per project. */
   databaseUrl?: string;
   dispatcher?: JobDispatcher;
+  /** Desktop sidecar mode (ADR-048); requires a loopback host. */
+  desktop?: { launchToken: string; origins?: readonly string[] };
 }
+
+/** Webview origins of the desktop app (macOS/Linux, Windows, and the Vite dev server). */
+export const DESKTOP_ORIGINS: readonly string[] = [
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'https://tauri.localhost',
+  'http://localhost:1420',
+];
 
 export interface RunningServer {
   url: string;
@@ -114,6 +124,9 @@ export function buildServer(options: ServerOptions) {
     kbDir: options.kbDir,
     ...(options.secureCookies ? { secureCookies: true } : {}),
     workerApi: { registry, states, clock, events, kbDir: options.kbDir, dataDir: options.dataDir, signingKey, leaseMs },
+    ...(options.desktop
+      ? { desktop: { launchToken: options.desktop.launchToken, origins: options.desktop.origins ?? DESKTOP_ORIGINS } }
+      : {}),
   });
   /** Enqueues the periodic knowledge base refresh once per interval (idempotent per time bucket). */
   const scheduleKbSync = () => {
@@ -146,8 +159,12 @@ export function buildServer(options: ServerOptions) {
 }
 
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
-  const built = buildServer(options);
   const host = options.host ?? '127.0.0.1';
+  if (options.desktop && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    throw new Error('desktop mode listens on loopback only');
+  }
+  if (options.desktop && options.desktop.launchToken.length < 32) throw new Error('desktop launch token too short');
+  const built = buildServer(options);
   const port = options.port ?? 8080;
   const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
     const s = serve({ fetch: built.app.fetch, hostname: host, port }, () => resolve(s));

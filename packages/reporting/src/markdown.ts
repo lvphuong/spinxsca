@@ -133,6 +133,22 @@ function renderEntry(entry: ReportEntry): string[] {
     out.push(`- **Why it appears:** ${assessment.changeCauses.join(', ').toLowerCase().replace(/_/g, ' ')}`);
   const intel = describeIntel(assessment.intel);
   if (intel) out.push(`- **Exploitation intel:** ${intel}`);
+  if (assessment.applicability) {
+    const a = assessment.applicability;
+    out.push(
+      `- **Applicability (VEX):** ${a.status.toLowerCase().replace(/_/g, ' ')}${a.justification ? ` — ${a.justification.replace(/_/g, ' ')}` : ''}${a.reachability ? ` · reachability ${a.reachability.toLowerCase().replace(/_/g, ' ')}` : ''}${a.scope && a.scope !== 'runtime' ? ` · ${a.scope} only` : ''}`,
+    );
+  }
+  if (assessment.poc) {
+    out.push(
+      `- **Proof of concept:** ${assessment.poc.outcome.toLowerCase().replace(/_/g, ' ')}${assessment.poc.oracle ? ` (${assessment.poc.oracle.toLowerCase().replace(/_/g, ' ')} oracle, sandboxed)` : ''}${assessment.poc.reviewedBy ? ' · harness reviewed independently' : ''}`,
+    );
+  }
+  if (assessment.severityBaseline && assessment.severityBaseline !== assessment.severity) {
+    out.push(
+      `- **Severity:** ${assessment.severity} by ${assessment.assessedBy} (scanner: ${assessment.severityBaseline}; the release gate keeps the higher one unless AI downgrades are trusted)`,
+    );
+  }
   const message = entry.candidates[0]?.message;
   if (message) out.push('', escapeMd(message));
   const ai = entry.explanation?.output;

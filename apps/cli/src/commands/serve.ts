@@ -4,7 +4,8 @@ import { startTemporalWorker } from '@spinxsca/temporal';
 import pc from 'picocolors';
 import { loadConfig } from '../config';
 import { aiOptions } from '../context';
-import { openEngine, resolveKbDir, scanDeps } from '../engine';
+import { resolveKbDir } from '../engine';
+import { serviceEngineFactory } from '../service-engine';
 import { CliError, createLogger, EXIT } from '../ui';
 import { gatePolicy } from './gate';
 import { connectDispatcher, type TemporalFlags, workflowBundlePath } from './temporal';
@@ -23,6 +24,8 @@ interface ServeOptions extends TemporalFlags {
   orchestrator: string;
   secureCookies?: boolean;
   verbose?: boolean;
+  /** Sidecar of the desktop app (ADR-048): launch token from SPINXSCA_API_TOKEN, loopback only. */
+  desktop?: boolean;
 }
 
 function serverKbDir(dataDir: string, configPath: string | undefined, flag: string | undefined): string {
@@ -37,13 +40,20 @@ export async function serveCommand(options: ServeOptions): Promise<number> {
   const loaded = loadConfig(options.config);
   const logger = createLogger(Boolean(options.verbose));
   const kbDir = serverKbDir(dataDir, options.config, options.kbDir);
-  const ai = loaded.config.ai?.level && loaded.config.ai.level !== 'off' ? aiOptions(loaded, {}) : null;
+  // Fail fast on an invalid AI configuration before the server starts.
+  if (loaded.config.ai?.level && loaded.config.ai.level !== 'off') aiOptions(loaded, {});
   const port = Number(options.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new CliError(`invalid --port ${options.port}`);
+  const launchToken = options.desktop ? process.env.SPINXSCA_API_TOKEN : undefined;
+  if (options.desktop && (!launchToken || launchToken.length < 32)) {
+    throw new CliError('--desktop needs a launch token of at least 32 characters in SPINXSCA_API_TOKEN');
+  }
+  // The variable is not needed once read; do not pass it on to scanner or sandbox processes.
+  if (options.desktop) delete process.env.SPINXSCA_API_TOKEN;
   const registry = Registry.open(dataDir);
   const hasAdmin = registry.tokens().some((t) => t.role === 'admin' && !t.revokedAt);
   registry.close();
-  if (!hasAdmin)
+  if (!hasAdmin && !options.desktop)
     throw new CliError(
       `no admin token in ${dataDir}; run \`spinxsca server init --data-dir ${options.dataDir}\` first`,
     );
@@ -66,22 +76,11 @@ export async function serveCommand(options: ServeOptions): Promise<number> {
     ...(process.env.SPINXSCA_NOTIFY_SECRET ? { notifySecret: process.env.SPINXSCA_NOTIFY_SECRET } : {}),
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, '') } : {}),
     ...(options.secureCookies ? { secureCookies: true } : {}),
+    ...(launchToken ? { desktop: { launchToken } } : {}),
     worker: options.worker,
     ...(options.pool?.length ? { pools: options.pool } : {}),
     ...(process.env.SPINXSCA_DATABASE_URL ? { databaseUrl: process.env.SPINXSCA_DATABASE_URL } : {}),
-    engines: ({ sourceDir, stateDir, repo, artifacts }) => {
-      const engine = openEngine({
-        scanRoot: sourceDir,
-        stateDir,
-        config: loaded,
-        kbDir,
-        logger,
-        ...(ai ? { ai } : {}),
-        ...(repo ? { repo } : {}),
-        ...(artifacts ? { artifacts } : {}),
-      });
-      return { deps: scanDeps(engine), close: () => engine.close() };
-    },
+    engines: serviceEngineFactory(loaded, logger, kbDir),
   });
   // With Temporal, this process also hosts the job activities unless --no-worker (then run
   // `spinxsca temporal-worker` against the same data directory).
@@ -97,6 +96,11 @@ export async function serveCommand(options: ServeOptions): Promise<number> {
           ...(bundle ? { workflowBundlePath: bundle } : {}),
         })
       : undefined;
+  if (options.desktop) {
+    // Handshake for the desktop shell: the actual port (the shell asked for port 0).
+    process.stdout.write(`SPINXSCA_READY port=${new URL(server.url).port}\n`);
+    watchParent();
+  }
   process.stderr.write(
     `${pc.green('spinxsca server')} listening on ${server.url} · data ${dataDir} · state ${process.env.SPINXSCA_DATABASE_URL ? 'PostgreSQL' : 'SQLite'} · knowledge base ${kbDir}${options.worker ? '' : ' · scan worker disabled'}\n`,
   );
@@ -135,4 +139,19 @@ export async function createToken(options: { dataDir: string; name: string; role
   } finally {
     registry.close();
   }
+}
+
+/** Exits when the desktop shell that spawned this sidecar is gone (SPINXSCA_PARENT_PID). */
+function watchParent(): void {
+  const parent = Number(process.env.SPINXSCA_PARENT_PID);
+  if (!Number.isInteger(parent) || parent <= 1) return;
+  const timer = setInterval(() => {
+    try {
+      process.kill(parent, 0);
+    } catch {
+      process.stderr.write('desktop shell exited; stopping\n');
+      process.kill(process.pid, 'SIGTERM');
+    }
+  }, 2000);
+  timer.unref();
 }

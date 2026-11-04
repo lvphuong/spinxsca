@@ -3,10 +3,11 @@
 Autonomous AI security code review agent: phân tích mã nguồn, phát hiện lỗ hổng có khả năng khai thác
 và hỗ trợ khắc phục dựa trên bằng chứng. Thiết kế và lộ trình nằm trong [docs/](docs/README.md).
 
-**Trạng thái: Phase 4 (nền tảng).** Có ba phần:
+**Trạng thái: Phase 5 (rà soát tự chủ có quản trị).** Có bốn phần:
 - **CLI:** bốn scanner chạy trong sandbox không mạng; code intelligence; incremental scan; vòng đời finding; AI explain, standard và fix (Claude hoặc model nội bộ qua API tương thích OpenAI, có `ai.data_policy`); KEV/EPSS/NVD; release gate; trạng thái finding theo nhánh.
 - **Service:** API, web UI, webhook, tái đánh giá tự động khi KB đổi. Mở rộng bằng worker từ xa (lease, fencing, pool on-prem), trạng thái project lưu trên SQLite hoặc PostgreSQL, điều phối bằng queue nội bộ hoặc Temporal. Triển khai bằng Docker Compose hoặc Helm; KB offline đi qua gói có chữ ký.
-- **VS Code extension.**
+- **Rà soát tự chủ (`spinxsca review`, `scan --ai deep`):** một "case" có lead, các persona chuyên trách (validator, dependency, secrets, iac, appsec, exploit, fixer, verifier) làm việc qua tool có kiểu; mọi tool call đi qua policy engine L0–L12 (hard floor, human-only, grant, reviewer model), audit và journal có hash-chain, inbox bền vững cho lần chạy không người trực; PoC L3 trong sandbox không mạng với oracle do host quyết định; sửa lỗi lặp có verifier độc lập và chỉ áp vào repo khi con người duyệt.
+- **VS Code extension** và **desktop app** (`apps/desktop`, Tauri 2, chưa ký).
 
 Kết quả và điểm còn thiếu: [Phase 1](docs/roadmap/phase-1-ket-qua.md), [Phase 2](docs/roadmap/phase-2-ket-qua.md), [Phase 3](docs/roadmap/phase-3-ket-qua.md), [Phase 4](docs/roadmap/phase-4-ket-qua.md).
 
@@ -35,7 +36,7 @@ State của dự án nằm ở `<path>/.spinxsca/` (SQLite + artifact content-ad
 |---|---|
 | `scan --mode dependency-reassessment` | Chỉ chạy lại SCA với snapshot knowledge base mới; advisory mới mang nguyên nhân `NEW_ADVISORY` |
 | `scan --ai explain` | Model kiểm chứng và giải thích finding mã nguồn mới (gửi đoạn mã đã che secret), có ngân sách `--max-cost` |
-| `scan --fail-on high [--all-findings]` | Mã thoát 1 khi có finding ≥ mức; finding đã disposition hoặc AI kết luận `UNLIKELY` không chặn |
+| `scan --fail-on high [--all-findings]` | Mã thoát 1 khi có finding ≥ mức; finding đã disposition không chặn. AI hạ severity hoặc kết luận `UNLIKELY` chỉ được tính khi `gate.trust_ai_downgrades: true` (mặc định gate dùng max(scanner, AI)) |
 | `scan --diff origin/main` | Incremental: chỉ quét phần thay đổi và các endpoint/caller bị ảnh hưởng; finding ngoài phạm vi được carry forward |
 | `scan --ai standard` | Thêm planner, investigators theo packet và auditor độc lập; finding AI hợp nhất với finding scanner |
 | `scan --baseline branch:main` | Đối chiếu với baseline của nhánh (`baseline set --branch main --reason …`) |
@@ -49,6 +50,12 @@ State của dự án nằm ở `<path>/.spinxsca/` (SQLite + artifact content-ad
 | `worker register` / `worker run` | Worker từ xa chạy quét cạnh mã nguồn, ghi kết quả qua control plane (`server provision-worker` phát token) |
 | `kb bundle keygen\|export\|import` | Gói KB có chữ ký cho môi trường on-prem / không mạng |
 | `fix <id>` / `verify-fix <id>` | Patch do AI đề xuất, áp dụng vào bản sao, re-scan và chạy test trong sandbox; `--apply --patch <id>` mới ghi vào working tree |
+| `review [--mode observe\|supervised\|autonomous] [--goal …] [--objectives …] [--l3] [--fix] [--unattended]` | Quét + case tự chủ: triage mọi finding có bằng chứng, VEX/reachability cho dependency, săn lỗ hổng mà scanner bỏ sót, PoC trong sandbox, sửa lỗi có verifier; báo cáo case ở `reports/<scanId>/case.md` |
+| `case list` / `case show <caseId> [--journal] [--audit] [--verify-chain]` | Xem case: objectives, coverage, verdict, journal và audit (kiểm hash-chain) |
+| `inbox list\|show\|approve\|deny [--grant once\|case\|standing] [--server URL --project ID]` | Hành động đang chờ con người (người trả lời đầu tiên thắng; yêu cầu human-only chỉ duyệt một lần) |
+| `memory list\|add\|promote\|forget` | Bộ nhớ dự án dùng cho các case sau (bài học do agent đề xuất chờ con người duyệt) |
+| `fix <id> --iterate [n]` | Lặp đề xuất patch với phản hồi re-scan/test đến khi verified |
+| `eval --suite governance` / `eval --suite ai --ai-provider scripted` | Ma trận quyết định policy (175 dòng) / cổng cứng của rà soát tự chủ (không false-confirm, không lộ secret, không side effect) |
 | `export --format sarif\|json\|md\|csv\|cyclonedx\|pr-comment`, `sbom` | Xuất kết quả |
 | `kb sync\|status\|snapshots\|lookup\|import\|export` | Quản lý knowledge base OSV |
 

@@ -68,6 +68,16 @@ function asView(graph: CodeGraph): CodeGraphView {
     callees: (key) => graph.callees(key),
     endpoints: (filter) => graph.endpoints(filter),
     authContext: (id) => graph.authContext(id),
+    importsOf: (path) =>
+      (graph.files.get(path)?.imports ?? []).map((i) => ({ specifier: i.specifier, names: i.names, line: i.line })),
+    callSitesIn: (path) =>
+      (graph.files.get(path)?.calls ?? []).map((c) => ({
+        line: c.line,
+        callerKey: c.callerKey,
+        callee: c.callee,
+        name: c.name,
+      })),
+    filePaths: () => [...graph.files.keys()].sort(),
   };
   return view;
 }

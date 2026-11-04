@@ -258,3 +258,31 @@ describe('remote worker protocol', () => {
     }
   });
 });
+
+describe('case RPC surface', () => {
+  it('never exposes human decisions to workers', async () => {
+    const { CASE_HUMAN_METHODS, CASE_METHODS, workerMayCall } = await import('../src/rpc');
+    for (const method of CASE_HUMAN_METHODS) {
+      expect(workerMayCall(method), method).toBe(false);
+      expect(CASE_METHODS.has(method), method).toBe(false);
+    }
+    expect(workerMayCall('appendAudit')).toBe(true);
+    expect(workerMayCall('constructor')).toBe(false);
+  });
+
+  it('covers every CaseRepository method exactly once', async () => {
+    const { CASE_HUMAN_METHODS, CASE_READ_METHODS, CASE_WRITE_METHODS } = await import('../src/rpc');
+    const { SqlCaseRepository, sqliteDriver } = await import('@spinxsca/storage');
+    const Database = (await import('better-sqlite3')).default;
+    const repo = new SqlCaseRepository(sqliteDriver(new Database(':memory:')));
+    const proto = Object.getOwnPropertyNames(Object.getPrototypeOf(repo)).filter(
+      (m) => m !== 'constructor' && typeof (repo as unknown as Record<string, unknown>)[m] === 'function',
+    );
+    const publicMethods = proto.filter((m) => !['rows', 'upsert', 'appendChained'].includes(m));
+    const listed = [...CASE_READ_METHODS, ...CASE_WRITE_METHODS, ...CASE_HUMAN_METHODS].filter(
+      (m) => m !== 'waiveObjective',
+    );
+    expect(new Set(listed).size).toBe(listed.length);
+    expect([...publicMethods].sort()).toEqual([...listed].sort());
+  });
+});

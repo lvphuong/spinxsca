@@ -23,6 +23,7 @@ export default defineConfig({
     for (const [from, to] of [
       ['../../rules/semgrep', 'dist/rules/semgrep'],
       ['../../prompts', 'dist/prompts'],
+      ['../../playbooks', 'dist/playbooks'],
     ] as const) {
       rmSync(resolve(to), { recursive: true, force: true });
       cpSync(resolve(from), resolve(to), { recursive: true });

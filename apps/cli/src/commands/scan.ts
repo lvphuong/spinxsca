@@ -10,6 +10,7 @@ import {
 import { REPORT_FORMATS, type ReportFormat } from '@spinxsca/reporting';
 import type { ScanMode, Severity } from '@spinxsca/schemas';
 import pc from 'picocolors';
+import { autonomyConfig, createReviewer, reviewPorts } from '../autonomy';
 import { loadConfig } from '../config';
 import { type AiFlags, aiOptions, type CommonOptions, withEngine } from '../context';
 import { scanDeps, writeReports } from '../engine';
@@ -74,7 +75,19 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
     };
     process.once('SIGINT', onSignal);
     try {
-      const outcome = await runScan(scanDeps(engine), {
+      // `--ai deep` runs the autonomous review unattended: asks park in the inbox (`spinxsca review` asks on the TTY).
+      const review =
+        ai?.level === 'deep'
+          ? {
+              reviewer: createReviewer({
+                ai,
+                loaded,
+                config: autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd),
+              }),
+              ports: reviewPorts(engine, loaded),
+            }
+          : undefined;
+      const outcome = await runScan(scanDeps(engine, review), {
         projectName: config.project?.name ?? engine.projectName,
         mode,
         exclude,
@@ -99,6 +112,7 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
       const policy = evaluatePolicy(outcome.assessments, {
         ...(failOn ? { failOnSeverity: failOn } : {}),
         newFindingsOnly: options.allFindings ? false : (config.policy?.new_findings_only ?? true),
+        trustAiDowngrades: config.gate?.trust_ai_downgrades ?? false,
         suppressed,
       });
       const complete = outcome.scan.summary?.completeness === 'COMPLETE';

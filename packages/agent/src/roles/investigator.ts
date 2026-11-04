@@ -15,6 +15,7 @@ import {
 import { costOf } from '../llm/pricing';
 import type { Effort, LlmProvider } from '../llm/types';
 import type { PromptBundle } from '../prompts/bundle';
+import { runLimited } from '../runtime/concurrency';
 import { type AgentBudget, runAgent } from '../runtime/loop';
 import { checkCitations, createCodeTools } from '../tools/code-tools';
 import { createGraphTools } from '../tools/graph-tools';
@@ -51,7 +52,7 @@ export class AgentInvestigator implements Investigator {
   async investigate(
     subject: InvestigationSubject,
     source: SourceTree,
-    options: { maxCostUsd: number; signal?: AbortSignal },
+    options: { maxCostUsd: number; signal?: AbortSignal; onRun?: (run: AgentRunRecord) => Promise<void> },
   ): Promise<InvestigationOutcome> {
     const runs: AgentRunRecord[] = [];
     const drafts: CandidateDraft[] = [];
@@ -119,15 +120,15 @@ export class AgentInvestigator implements Investigator {
       },
       maxCostUsd: remaining(),
     });
-    runs.push(
-      toRecord(plan, {
-        role: 'planner',
-        provider: planner,
-        promptBundleDigest: this.options.prompts.digest,
-        startedAt,
-        scanId: subject.scan.scanId,
-      }),
-    );
+    const planRecord = toRecord(plan, {
+      role: 'planner',
+      provider: planner,
+      promptBundleDigest: this.options.prompts.digest,
+      startedAt,
+      scanId: subject.scan.scanId,
+    });
+    runs.push(planRecord);
+    await options.onRun?.(planRecord);
     cost += plan.costUsd ?? 0;
     const packets = plan.output?.packets.slice(0, this.options.maxPackets ?? 6) ?? [];
     if (!plan.output) deferred.push(`planner ${plan.status.toLowerCase()}${plan.error ? ` (${plan.error})` : ''}`);
@@ -166,6 +167,7 @@ export class AgentInvestigator implements Investigator {
         startedAt: started,
         scanId: subject.scan.scanId,
       });
+      await options.onRun?.(run);
       if (!result.output) {
         return {
           run,
@@ -225,17 +227,4 @@ function toDraft(finding: AiFinding, role: 'investigator' | 'auditor'): Candidat
     confidenceHint: finding.confidence,
     locations,
   };
-}
-
-async function runLimited<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < tasks.length) {
-      const index = next++;
-      results[index] = await (tasks[index] as () => Promise<T>)();
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
-  return results;
 }

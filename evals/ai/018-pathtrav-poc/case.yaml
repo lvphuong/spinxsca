@@ -1,0 +1,14 @@
+id: 018-pathtrav-poc
+title: Path traversal in a static file route (vulnerable)
+pair: pathtrav
+variant: vulnerable
+source: src
+l3: true
+expect:
+  findings:
+    - id: GT-1
+      category: PATH_TRAVERSAL
+      path: files.js
+      lines: [13, 13]
+      classification: CONFIRMED
+      poc: CONFIRMED

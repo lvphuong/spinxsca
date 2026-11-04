@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type {
+  CaseVerdict,
   Coverage,
   Evidence,
   Finding,
@@ -42,7 +43,9 @@ import type {
   SourceTree,
 } from '../ports';
 import { groupCandidates, PRESENT_STATES, type PriorFinding, type ReconcileOutput, reconcile } from '../reconcile';
-import { applyRedactions, type RedactionSpan, redactSecrets } from '../redact';
+import { applyRedactions, type RedactionSpan, redactSecrets, scrubberFromSpans } from '../redact';
+import type { AutonomousReviewer, ReviewPortContext, ReviewPorts } from '../review/ports';
+import { applyCaseVerdicts } from '../review/verdicts';
 import { captureSnapshot } from '../snapshot';
 import { AI_POLICY_VERSION, FINGERPRINT_ALGORITHM } from '../version';
 
@@ -60,6 +63,9 @@ export interface ScanDeps {
   codeIntel?: CodeIntelPort;
   explainer?: FindingExplainer;
   investigator?: Investigator;
+  /** Autonomous review (`ai.level: deep`, ADR-044) and the ports of its case. */
+  reviewer?: AutonomousReviewer;
+  reviewPorts?: (ctx: ReviewPortContext) => Promise<ReviewPorts>;
 }
 
 export type BaselineSelector =
@@ -69,7 +75,7 @@ export type BaselineSelector =
   | { kind: 'none' };
 
 export interface AiScanOptions {
-  level: 'off' | 'explain' | 'standard';
+  level: 'off' | 'explain' | 'standard' | 'deep';
   maxFindings: number;
   maxCostUsd: number;
 }
@@ -92,6 +98,8 @@ export interface ScanRequest {
   /** Branch the scan is attributed to; defaults to the git branch of the working tree. */
   branch?: string;
   ai?: AiScanOptions;
+  /** Deep level: continue an existing review case (CASE_RESUME jobs). */
+  reviewCaseId?: string;
   resumeScanId?: string;
   signal?: AbortSignal;
   onProgress?: (event: ScanProgress) => void;
@@ -107,7 +115,15 @@ export interface ScanOutcome {
   tasks: ScanTask[];
   assessments: FindingAssessment[];
   impact?: CodeImpactReport;
-  ai?: { investigated: number; explained: number; skipped: number; costUsd: number; failures: string[] };
+  ai?: {
+    investigated: number;
+    explained: number;
+    skipped: number;
+    costUsd: number;
+    failures: string[];
+    /** Autonomous review case of this scan (deep level). */
+    review?: { caseId: string; status: string; verdicts: number; applied: number };
+  };
 }
 
 const EXCERPT_CONTEXT_LINES = 3;
@@ -174,6 +190,27 @@ const investigationActivity: Activity<
   idempotencyKey: (input) => `investigation:${digestOf(input.identity)}`,
   run: async (input) => ({ output: await input.run() }),
 };
+
+interface ReviewOutput {
+  caseId: string;
+  status: string;
+  drafts: CandidateDraft[];
+  verdicts: Array<{ draftRef: string; verdict: CaseVerdict }>;
+  costUsd: number;
+  deferred: string[];
+  runIds: string[];
+}
+const reviewActivity: Activity<{ identity: Record<string, unknown>; run: () => Promise<ReviewOutput> }, ReviewOutput> =
+  {
+    name: 'ai-review',
+    kind: 'AGENT',
+    idempotencyKey: (input) => `review:${digestOf(input.identity)}`,
+    // A parked case is usable output: verdicts reached so far are applied, the rest resumes later.
+    run: async (input) => {
+      const output = await input.run();
+      return { output, status: output.status === 'CONVERGED' ? 'SUCCEEDED' : 'PARTIAL' };
+    },
+  };
 
 /** Scanners that run for a mode: dependency reassessment only re-runs SCA against new advisories. */
 export function scannersForMode(
@@ -243,11 +280,13 @@ export async function runScan(deps: ScanDeps, request: ScanRequest): Promise<Sca
       throw new SpinxscaError(`knowledge base snapshot ${request.kbSnapshotId} not found`, 'NOT_FOUND');
     const requestedAt = clock.now().toISOString();
     const aiRole =
-      request.ai?.level === 'standard'
-        ? (deps.investigator ?? deps.explainer)
-        : request.ai?.level === 'explain'
-          ? deps.explainer
-          : undefined;
+      request.ai?.level === 'deep'
+        ? deps.reviewer
+        : request.ai?.level === 'standard'
+          ? (deps.investigator ?? deps.explainer)
+          : request.ai?.level === 'explain'
+            ? deps.explainer
+            : undefined;
     const manifest = await buildManifest({
       scanId,
       snapshot,
@@ -266,6 +305,7 @@ export async function runScan(deps: ScanDeps, request: ScanRequest): Promise<Sca
               promptBundleDigest: aiRole.info.promptBundleDigest,
               provider: aiRole.info.provider,
               model: aiRole.info.model,
+              ...(request.ai.level === 'deep' && deps.reviewer ? { autonomyDigest: deps.reviewer.policyDigest } : {}),
             }
           : { level: 'off', policyVersion: AI_POLICY_VERSION },
     });
@@ -492,7 +532,11 @@ async function executeScan(
             redactions: redactionsEarly,
           },
           deps.source,
-          { maxCostUsd: options.maxCostUsd, ...(request.signal ? { signal: request.signal } : {}) },
+          {
+            maxCostUsd: options.maxCostUsd,
+            ...(request.signal ? { signal: request.signal } : {}),
+            onRun: (run) => repo.saveAgentRun(run),
+          },
         );
         for (const run of outcome.runs) await repo.saveAgentRun(run);
         return {
@@ -509,6 +553,66 @@ async function executeScan(
       if (result.output.deferred.length) aiStats.failures.push(`deferred: ${result.output.deferred.join('; ')}`);
       scannerOutputs.push({ task: result.task, output: { drafts: result.output.drafts, rawArtifacts: {} } });
     } else aiStats.failures.push(`investigation: ${result.task.error ?? result.task.status}`);
+  }
+
+  // 4b. Autonomous review (deep level): a governed case triages every scanner draft, assesses
+  //     dependency applicability and hunts for more; confirmed agent findings join the drafts and
+  //     verdicts are applied to the assessments before commit (ADR-044).
+  let caseVerdicts: ReviewOutput['verdicts'] = [];
+  let reviewInfo: { caseId: string; status: string; verdicts: number; applied: number } | undefined;
+  if (request.ai?.level === 'deep' && deps.reviewer && deps.reviewPorts) {
+    aiRan = true;
+    const reviewer = deps.reviewer;
+    const portsFor = deps.reviewPorts;
+    const options = request.ai;
+    progress({ stage: 'ai', message: 'autonomous review' });
+    const result = await runActivity(runnerDeps, scan.scanId, reviewActivity, {
+      identity: { scanId: scan.scanId, policy: scan.manifest.aiPolicy, content: snapshot.contentManifestDigest },
+      run: async () => {
+        const scrubber = await scrubberFromSpans((p) => deps.source.readText(p), redactionsEarly);
+        const ports = await portsFor({
+          scan,
+          snapshot,
+          files,
+          ...(graph ? { graph } : {}),
+          runner: runnerDeps,
+          redactions: redactionsEarly,
+          scrubber,
+        });
+        const outcome = await reviewer.review(
+          {
+            scan,
+            snapshotPaths: files.map((f) => f.path),
+            ...(graph ? { graph } : {}),
+            scannerDrafts,
+            redactions: redactionsEarly,
+            scrubber,
+            ports,
+          },
+          deps.source,
+          {
+            maxCostUsd: options.maxCostUsd,
+            ...(request.signal ? { signal: request.signal } : {}),
+            onRun: (run) => repo.saveAgentRun(run),
+            ...(request.reviewCaseId ? { caseId: request.reviewCaseId } : {}),
+          },
+        );
+        return { ...outcome, status: outcome.status };
+      },
+    });
+    if (result.output) {
+      aiStats.costUsd += result.output.costUsd;
+      aiStats.investigated = result.output.drafts.length;
+      if (result.output.deferred.length) aiStats.failures.push(`deferred: ${result.output.deferred.join('; ')}`);
+      scannerOutputs.push({ task: result.task, output: { drafts: result.output.drafts, rawArtifacts: {} } });
+      caseVerdicts = result.output.verdicts;
+      reviewInfo = {
+        caseId: result.output.caseId,
+        status: result.output.status,
+        verdicts: caseVerdicts.length,
+        applied: 0,
+      };
+    } else aiStats.failures.push(`review: ${result.task.error ?? result.task.status}`);
   }
 
   // 5. Candidates: the host assigns ids, fingerprints and evidence (ADR-022).
@@ -574,7 +678,15 @@ async function executeScan(
       newId,
     });
     if (kb && deps.knowledgeBase?.intel) await attachIntel(deps.knowledgeBase, kb.snapshotId, result, candidates);
-    if (request.ai && request.ai.level !== 'off' && deps.explainer) {
+    if (caseVerdicts.length && reviewInfo && deps.reviewer) {
+      reviewInfo.applied = applyCaseVerdicts(
+        result,
+        candidates,
+        caseVerdicts,
+        `agent:review/${deps.reviewer.info.model}`,
+      );
+    }
+    if (request.ai && request.ai.level !== 'off' && request.ai.level !== 'deep' && deps.explainer) {
       const explained = await explainNewFindings(deps, request, scan, result, candidates, files, redactions, progress);
       aiStats.explained = explained.explained;
       aiStats.skipped = explained.skipped;
@@ -616,7 +728,13 @@ async function executeScan(
   });
   const finalScan = (await repo.getScan(scan.scanId)) as ScanRun;
   if (status === 'FAILED') logger.error(`all scanner tasks failed for ${scan.scanId}`);
-  return { scan: finalScan, tasks, assessments, ...(impact ? { impact } : {}), ...(aiRan ? { ai: aiStats } : {}) };
+  return {
+    scan: finalScan,
+    tasks,
+    assessments,
+    ...(impact ? { impact } : {}),
+    ...(aiRan ? { ai: { ...aiStats, ...(reviewInfo ? { review: reviewInfo } : {}) } } : {}),
+  };
 }
 
 /**
@@ -723,6 +841,7 @@ async function explainNewFindings(
       ...target.assessment,
       classification: explanation.classification,
       severity: explanation.severity,
+      severityBaseline: target.assessment.severityBaseline ?? target.assessment.severity,
       confidence: explanation.confidence,
       exploitability: explanation.classification === 'UNLIKELY' ? 'UNLIKELY' : 'POTENTIAL',
       verificationLevel: 'L2_CONTEXT',
@@ -897,7 +1016,8 @@ async function buildCandidates(
             endLine: primary.endLine,
             fileText: await readFile(primary.path),
           });
-      const ruleFamily = draft.scanner === 'ai' ? familyOf(draft.category) : draft.ruleFamily;
+      // AI drafts (investigation, review, probes) group with scanner output by category family.
+      const ruleFamily = draft.scanner.startsWith('ai') ? familyOf(draft.category) : draft.ruleFamily;
       const key = [draft.category, ruleFamily, base.path, base.symbol, base.shape, draft.ruleId].join('|');
       pending.push({
         draft: { ...draft, ruleFamily, locations },

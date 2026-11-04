@@ -24,7 +24,7 @@ export function renderPrComment(
     lines.push('| Severity | Finding | Location | Status |', '|---|---|---|---|');
     for (const e of fresh.slice(0, MAX_ROWS)) {
       const loc = e.occurrence?.locations[0];
-      const status = `${e.assessment.classification.toLowerCase()} · ${e.assessment.verificationLevel.replace('_', ' ').toLowerCase()}`;
+      const status = `${e.assessment.classification.toLowerCase()} · ${e.assessment.verificationLevel.replace('_', ' ').toLowerCase()}${e.assessment.poc?.outcome === 'CONFIRMED' ? ' · PoC confirmed' : ''}${e.assessment.applicability ? ` · ${e.assessment.applicability.status.toLowerCase().replace(/_/g, ' ')}` : ''}`;
       lines.push(
         `| ${e.assessment.severity} | \`${e.finding.findingId}\` ${escapeCell(e.finding.title)} | \`${loc ? `${loc.path}:${loc.startLine}` : '-'}\` | ${status} |`,
       );

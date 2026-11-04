@@ -4,12 +4,16 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { CodeIntelService } from '@spinxsca/code-intel';
 import {
   type ArtifactStore,
+  type AutonomousReviewer,
   buildReportModel,
+  type CaseRepository,
   type FindingExplainer,
   type Investigator,
   type Logger,
   type ProjectAssistant,
   type Remediator,
+  type ReviewPortContext,
+  type ReviewPorts,
   type ScanDeps,
   type ScannerAdapter,
   type ScanRepository,
@@ -46,6 +50,8 @@ export interface EngineOptions {
   /** Remote workers: project state lives on the control plane (ADR-037). */
   repo?: ScanRepository;
   artifacts?: ArtifactStore;
+  /** Case store of the control plane for remote review jobs (ADR-047). */
+  cases?: CaseRepository;
 }
 
 export interface Engine {
@@ -64,6 +70,8 @@ export interface Engine {
   assistant?: ProjectAssistant;
   investigator?: Investigator;
   remediator?: Remediator;
+  /** Review case store (ADR-044): the local state database, or the control plane for workers. */
+  cases?: CaseRepository;
   logger: Logger;
   close(): void;
 }
@@ -122,6 +130,7 @@ export function openEngine(options: EngineOptions): Engine {
     ...(osv ? { osv } : {}),
     ...(kb ? { kb } : {}),
     codeIntel: new CodeIntelService(stateDir),
+    ...(options.cases ? { cases: options.cases } : local ? { cases: local.cases() } : {}),
     ...(ai
       ? { explainer: ai.explainer, assistant: ai.assistant, investigator: ai.investigator, remediator: ai.remediator }
       : {}),
@@ -133,7 +142,10 @@ export function openEngine(options: EngineOptions): Engine {
   };
 }
 
-export function scanDeps(engine: Engine): ScanDeps {
+export function scanDeps(
+  engine: Engine,
+  review?: { reviewer: AutonomousReviewer; ports: (ctx: ReviewPortContext) => Promise<ReviewPorts> },
+): ScanDeps {
   return {
     repo: engine.repo,
     artifacts: engine.artifacts,
@@ -147,6 +159,7 @@ export function scanDeps(engine: Engine): ScanDeps {
     codeIntel: engine.codeIntel,
     ...(engine.explainer ? { explainer: engine.explainer } : {}),
     ...(engine.investigator ? { investigator: engine.investigator } : {}),
+    ...(review ? { reviewer: review.reviewer, reviewPorts: review.ports } : {}),
   };
 }
 

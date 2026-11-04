@@ -1,7 +1,7 @@
 import type { Finding, FindingAssessment, ScanRun, Severity } from '@spinxsca/schemas';
 import { severityAtLeast } from '@spinxsca/schemas';
 import { scansByBranch } from './branches';
-import { activeDispositions } from './policy';
+import { activeDispositions, gateView } from './policy';
 import type { ScanRepository } from './ports';
 import { PRESENT_STATES } from './reconcile';
 
@@ -12,6 +12,8 @@ export interface ReleaseGatePolicy {
   epssThreshold?: number;
   requireCompleteCoverage: boolean;
   maxKbAgeHours?: number;
+  /** AI downgrades are ignored unless true (ADR-041). */
+  trustAiDowngrades?: boolean;
 }
 
 export const DEFAULT_GATE_POLICY: ReleaseGatePolicy = {
@@ -112,8 +114,11 @@ export async function evaluateReleaseGate(
   for (const a of await repo.listAssessments(scan.scanId)) {
     if (!isOpen(a) || suppressed.has(a.findingId)) continue;
     const reasons: string[] = [];
-    if (a.classification !== 'UNLIKELY' && severityAtLeast(a.severity, policy.failOnSeverity)) {
-      reasons.push(`severity ${a.severity}`);
+    const view = gateView(a, policy.trustAiDowngrades ?? false);
+    if (!view.exempt && severityAtLeast(view.severity, policy.failOnSeverity)) {
+      reasons.push(
+        view.severity === a.severity ? `severity ${a.severity}` : `severity ${view.severity} (AI: ${a.severity})`,
+      );
       counts.severity++;
     }
     if (policy.blockKev && a.intel?.kev) {
@@ -127,7 +132,7 @@ export async function evaluateReleaseGate(
     if (reasons.length === 0) continue;
     const finding = findings.get(a.findingId) ?? (await repo.getFinding(a.findingId));
     if (finding) findings.set(a.findingId, finding);
-    blocking.push({ findingId: a.findingId, title: finding?.title ?? a.findingId, severity: a.severity, reasons });
+    blocking.push({ findingId: a.findingId, title: finding?.title ?? a.findingId, severity: view.severity, reasons });
   }
   checks.push({
     id: 'severity',

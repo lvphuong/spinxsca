@@ -82,8 +82,12 @@ export interface Mount {
   readOnly: boolean;
 }
 
-/** Sandbox profiles are chosen by the host, never by a model (ADR-025). */
-export type SandboxProfile = 'scan' | 'validation' | 'patch';
+/**
+ * Sandbox profiles are chosen by the host, never by a model (ADR-025, ADR-043): `scan` for scanners,
+ * `analysis` for the agent's read-only shell over a redacted copy, `validation` for PoC harnesses and
+ * `patch` for project tests in a fix workspace. Every profile has the network disabled.
+ */
+export type SandboxProfile = 'scan' | 'analysis' | 'validation' | 'patch';
 
 export interface ContainerRunSpec {
   name: string;
@@ -112,7 +116,7 @@ export interface SandboxPreflight {
 }
 
 export interface SandboxRunner {
-  preflight(image: string): Promise<SandboxPreflight>;
+  preflight(image: string, profile?: SandboxProfile): Promise<SandboxPreflight>;
   run(spec: ContainerRunSpec, signal?: AbortSignal): Promise<ContainerRunResult>;
 }
 
@@ -371,6 +375,25 @@ export interface CodeGraphView {
   callees(key: string): CodeCallEdge[];
   endpoints(filter?: { path?: string; method?: string; route?: string }): CodeEndpoint[];
   authContext(endpointId: string): CodeAuthContext | undefined;
+  /** Import statements of a file (dependency reachability, ADR-043). */
+  importsOf?(path: string): CodeImport[];
+  /** Call sites inside a file, as written. */
+  callSitesIn?(path: string): CodeCallSite[];
+  /** Indexed file paths. */
+  filePaths?(): string[];
+}
+
+export interface CodeImport {
+  specifier: string;
+  names: Array<{ imported: string; local: string }>;
+  line: number;
+}
+
+export interface CodeCallSite {
+  line: number;
+  callerKey: string;
+  callee: string;
+  name: string;
 }
 
 export interface CodeImpactReport {
@@ -423,6 +446,11 @@ export interface Investigator {
   investigate(
     subject: InvestigationSubject,
     source: SourceTree,
-    options: { maxCostUsd: number; signal?: AbortSignal },
+    options: {
+      maxCostUsd: number;
+      signal?: AbortSignal;
+      /** Called as each role finishes, so a crash mid-investigation keeps the audit of finished runs. */
+      onRun?: (run: AgentRunRecord) => Promise<void>;
+    },
   ): Promise<InvestigationOutcome>;
 }

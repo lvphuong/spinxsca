@@ -1,8 +1,8 @@
 import { join } from 'node:path';
-import type { KnowledgeBasePort, KnowledgeBaseRef } from '@spinxsca/core';
+import type { AdvisoryInfo, KnowledgeBasePort, KnowledgeBaseRef } from '@spinxsca/core';
 import type { VulnIntel } from '@spinxsca/schemas';
 import { materializeOsvScannerDb } from './materialize';
-import { affectedPackages } from './osv';
+import { affectedPackages, fixedVersions, type OsvRecord } from './osv';
 import { type KbSnapshot, KbStore } from './store';
 
 /**
@@ -21,6 +21,36 @@ export class LocalKnowledgeBase implements KnowledgeBasePort {
 
   close(): void {
     this.store.close();
+  }
+
+  /**
+   * Advisories as of a snapshot for the agent's `kb_lookup` (ADR-043): affected packages with fixed
+   * versions, KEV/EPSS and the vulnerable symbols the record names, if any.
+   */
+  async advisories(snapshotId: string | undefined, ids: readonly string[]): Promise<AdvisoryInfo[]> {
+    const snapshot = snapshotId ? this.store.snapshot(snapshotId) : this.store.latestSnapshot();
+    const out: AdvisoryInfo[] = [];
+    for (const id of ids) {
+      const found = this.store.lookup(id, snapshot);
+      if (!found) continue;
+      const record = found.record;
+      const intel = snapshot ? this.store.intelFor(snapshot, [record.id, ...(record.aliases ?? [])]) : undefined;
+      out.push({
+        id: record.id,
+        aliases: record.aliases ?? [],
+        summary: (record.summary ?? record.details ?? '').slice(0, 1500),
+        ...(record.database_specific?.severity ? { severity: record.database_specific.severity } : {}),
+        packages: affectedPackages(record).map((p) => ({ ...p, fixed: fixedVersions(record, p.ecosystem, p.name) })),
+        symbols: symbolsOf(record),
+        ...(intel?.kev ? { kev: { dateAdded: intel.kev.dateAdded } } : {}),
+        ...(intel?.epss ? { epss: { score: intel.epss.score, percentile: intel.epss.percentile } } : {}),
+        references: ((record as { references?: Array<{ url?: string }> }).references ?? [])
+          .map((r) => r.url ?? '')
+          .filter(Boolean)
+          .slice(0, 10),
+      });
+    }
+    return out;
   }
 
   async resolveSnapshot(snapshotId?: string): Promise<KnowledgeBaseRef | null> {
@@ -79,4 +109,19 @@ export class LocalKnowledgeBase implements KnowledgeBasePort {
 
 function toRef(snapshot: KbSnapshot): KnowledgeBaseRef {
   return { snapshotId: snapshot.snapshotId, digest: snapshot.digest, ecosystems: snapshot.ecosystems };
+}
+
+/** Vulnerable symbols named by an OSV record (Go `imports[].symbols`, `affected_functions` variants). */
+export function symbolsOf(record: OsvRecord): string[] {
+  const out = new Set<string>();
+  for (const a of record.affected ?? []) {
+    const eco = (a as { ecosystem_specific?: Record<string, unknown> }).ecosystem_specific ?? {};
+    const db = (a as { database_specific?: Record<string, unknown> }).database_specific ?? {};
+    for (const imp of (eco.imports as Array<{ symbols?: string[] }> | undefined) ?? [])
+      for (const s of imp.symbols ?? []) out.add(s);
+    for (const source of [eco.affected_functions, db.affected_functions, eco.functions]) {
+      if (Array.isArray(source)) for (const s of source) if (typeof s === 'string') out.add(s);
+    }
+  }
+  return [...out].sort();
 }

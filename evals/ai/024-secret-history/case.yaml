@@ -1,0 +1,22 @@
+id: 024-secret-history
+title: Credential committed in history, removed from the working tree
+source: src
+git_history:
+  - message: add settings
+    files:
+      settings.js: |
+        module.exports = {
+          apiKey: "Rk7Tm9Wb4Hc6Jd1Gp5Ys0Nf3qL8vZx2",
+        };
+  - message: read the key from the environment
+    files:
+      settings.js: |
+        module.exports = { apiKey: process.env.API_KEY };
+secrets:
+  - Rk7Tm9Wb4Hc6Jd1Gp5Ys0Nf3qL8vZx2
+expect:
+  findings:
+    - id: GT-1
+      category: HARDCODED_SECRET
+      path: settings.js
+      scanner: gitleaks-history

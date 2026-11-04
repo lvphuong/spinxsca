@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Confidence, FingerprintAnchor, Location, Severity, Timestamp } from './common';
+import { Confidence, Digest, FingerprintAnchor, Location, Severity, Timestamp } from './common';
 import { VulnIntel } from './intel';
 import { Category, CweId } from './taxonomy';
 
@@ -72,6 +72,53 @@ export const AttackPath = z.object({
   controls: z.array(z.string()).default([]),
 });
 
+export const ReachabilityLevel = z.enum([
+  'CALLED_FROM_ENTRYPOINT',
+  'CALLED',
+  'IMPORTED_ONLY',
+  'NOT_IMPORTED',
+  'UNKNOWN_TRANSITIVE',
+]);
+export type ReachabilityLevel = z.infer<typeof ReachabilityLevel>;
+
+/** VEX-style applicability of a vulnerable dependency (CISA VEX justifications). */
+export const Applicability = z.object({
+  status: z.enum(['AFFECTED', 'NOT_AFFECTED', 'UNDER_INVESTIGATION']),
+  justification: z
+    .enum([
+      'component_not_present',
+      'vulnerable_code_not_present',
+      'vulnerable_code_not_in_execute_path',
+      'vulnerable_code_cannot_be_controlled_by_adversary',
+      'inline_mitigations_already_exist',
+    ])
+    .optional(),
+  reachability: ReachabilityLevel.optional(),
+  /** Where the vulnerable symbols came from: the advisory or the model. */
+  symbolSource: z.enum(['advisory', 'model', 'none']).optional(),
+  scope: z.enum(['runtime', 'development', 'test', 'unknown']).optional(),
+  detail: z.string().max(2000),
+});
+export type Applicability = z.infer<typeof Applicability>;
+
+export const PocOracle = z.enum(['CANARY_READ', 'COMMAND_MARKER', 'DATA_DIFFERENTIAL', 'UNESCAPED_REFLECTION']);
+export type PocOracle = z.infer<typeof PocOracle>;
+
+/** L3 controlled validation (ADR-045): the host, not the model, decides the outcome. */
+export const PocResult = z.object({
+  outcome: z.enum(['CONFIRMED', 'NOT_CONFIRMED', 'INVALID_HARNESS', 'BLOCKED', 'ERROR']),
+  oracle: PocOracle.optional(),
+  runs: z.number().int().nonnegative(),
+  attackTriggered: z.boolean(),
+  controlTriggered: z.boolean(),
+  harnessDigest: Digest.optional(),
+  logDigest: Digest.optional(),
+  /** Validator run that reviewed the harness (REVIEW_POC). */
+  reviewedBy: z.string().optional(),
+  detail: z.string().max(2000),
+});
+export type PocResult = z.infer<typeof PocResult>;
+
 /** The conclusion one scan reached about one finding. Never overwritten. */
 export const FindingAssessment = z.object({
   assessmentId: z.string(),
@@ -82,6 +129,11 @@ export const FindingAssessment = z.object({
   reconciliationState: ReconciliationState,
   classification: Classification,
   severity: Severity,
+  /**
+   * Severity before an AI assessment changed it (scanner or host rule). The gate does not trust an AI
+   * downgrade below this unless `gate.trust_ai_downgrades` is set (ADR-041).
+   */
+  severityBaseline: Severity.optional(),
   confidence: Confidence,
   exploitability: Exploitability,
   verificationLevel: VerificationLevel,
@@ -93,6 +145,10 @@ export const FindingAssessment = z.object({
   changeCauses: z.array(ChangeCause),
   /** Dependency findings: KEV / EPSS / CVSS from the scan's knowledge base snapshot. */
   intel: VulnIntel.optional(),
+  /** Dependency findings: VEX applicability decided by an autonomous review case. */
+  applicability: Applicability.optional(),
+  /** L3: outcome of a sandboxed proof of concept decided by the host oracle. */
+  poc: PocResult.optional(),
   assessedBy: z.string(),
   assessedAt: Timestamp,
 });

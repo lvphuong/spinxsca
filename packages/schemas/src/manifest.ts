@@ -59,6 +59,8 @@ export const AnalysisManifest = z.object({
     promptBundleDigest: Digest.optional(),
     provider: z.string().optional(),
     model: z.string().optional(),
+    /** Deep level: digest of autonomy policy, personas, playbooks and toolbox (ADR-044). */
+    autonomyDigest: Digest.optional(),
   }),
   scanMode: ScanMode,
   baselineScanId: z.string().optional(),

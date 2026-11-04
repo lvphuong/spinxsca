@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PgScanRepository } from '../src/index';
+import { caseRepositoryContract } from './case-contract';
 import { repositoryContract } from './contract';
 
 const IMAGE = 'postgres:17-alpine';
@@ -56,6 +57,11 @@ describe.runIf(dockerReady)('PgScanRepository (docker)', () => {
   repositoryContract('postgres', async () => {
     const repo = PgScanRepository.open({ pool, schema: `t_${randomBytes(6).toString('hex')}` });
     return { repo, close: () => repo.close() };
+  });
+
+  caseRepositoryContract('postgres', async () => {
+    const repo = PgScanRepository.open({ pool, schema: `t_${randomBytes(6).toString('hex')}` });
+    return { repo: repo.cases(), close: () => repo.close() };
   });
 
   it('isolates projects by schema and serialises concurrent first opens', async () => {

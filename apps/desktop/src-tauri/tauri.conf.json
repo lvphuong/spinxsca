@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Spinx SecureCode AI",
+  "version": "0.5.0",
+  "identifier": "com.spinxsca.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:*",
+        "frame-src": "'self'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Spinx",
+    "category": "DeveloperTool",
+    "shortDescription": "Autonomous, governed security review of your code",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "resources": { "sidecar": "sidecar" },
+    "createUpdaterArtifacts": false,
+    "macOS": { "minimumSystemVersion": "12.0" },
+    "windows": { "nsis": { "installMode": "currentUser" } },
+    "linux": { "deb": { "depends": [] } }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/lvphuong/spinxsca/releases/latest/download/latest.json"],
+      "pubkey": "REPLACE_WITH_MINISIGN_PUBLIC_KEY"
+    }
+  }
+}

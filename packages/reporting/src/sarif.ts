@@ -134,6 +134,27 @@ function resultProperties(entry: ReportEntry): Record<string, unknown> {
     classification: entry.assessment.classification,
     verificationLevel: entry.assessment.verificationLevel,
     reconciliationState: entry.assessment.reconciliationState,
+    ...(entry.assessment.severityBaseline && entry.assessment.severityBaseline !== entry.assessment.severity
+      ? { severityBaseline: entry.assessment.severityBaseline }
+      : {}),
+    ...(entry.assessment.applicability
+      ? {
+          applicability: entry.assessment.applicability.status,
+          ...(entry.assessment.applicability.justification
+            ? { vexJustification: entry.assessment.applicability.justification }
+            : {}),
+          ...(entry.assessment.applicability.reachability
+            ? { reachability: entry.assessment.applicability.reachability }
+            : {}),
+        }
+      : {}),
+    ...(entry.assessment.poc
+      ? {
+          pocOutcome: entry.assessment.poc.outcome,
+          ...(entry.assessment.poc.oracle ? { pocOracle: entry.assessment.poc.oracle } : {}),
+        }
+      : {}),
+    assessedBy: entry.assessment.assessedBy,
     firstSeenScanId: entry.finding.firstSeenScanId,
     ...(entry.candidates[0]?.package ? { package: entry.candidates[0].package.purl } : {}),
     ...(entry.candidates[0]?.vulnerabilityIds ? { vulnerabilityIds: entry.candidates[0].vulnerabilityIds } : {}),

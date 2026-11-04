@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@spinxsca/core": "workspace:*"
+    "@spinxsca/core": "workspace:*",
+    "@spinxsca/schemas": "workspace:*"
   }
 }

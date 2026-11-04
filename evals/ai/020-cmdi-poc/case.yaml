@@ -1,0 +1,13 @@
+id: 020-cmdi-poc
+title: Command injection through a shell command (vulnerable)
+pair: cmdi
+variant: vulnerable
+source: src
+l3: true
+expect:
+  findings:
+    - id: GT-1
+      category: COMMAND_INJECTION
+      path: tools.py
+      lines: [11, 11]
+      poc: CONFIRMED

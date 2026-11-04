@@ -66,11 +66,11 @@ export function aiOptions(
   loaded: LoadedConfig,
   flags: AiFlags,
   force = false,
-): (AiExplainOptions & { level: 'explain' | 'standard'; maxCostUsd: number; maxFindings: number }) | null {
+): (AiExplainOptions & { level: 'explain' | 'standard' | 'deep'; maxCostUsd: number; maxFindings: number }) | null {
   const ai = loaded.config.ai;
   const level = flags.ai ?? ai?.level ?? 'off';
-  if (!['off', 'explain', 'standard'].includes(level)) {
-    throw new CliError(`unknown --ai level "${level}" (expected off, explain or standard)`);
+  if (!['off', 'explain', 'standard', 'deep'].includes(level)) {
+    throw new CliError(`unknown --ai level "${level}" (expected off, explain, standard or deep)`);
   }
   if (level === 'off' && !force) return null;
   if (ai && ai.send_source_snippets === false) {
@@ -88,7 +88,7 @@ export function aiOptions(
   const maxCost = flags.maxCost !== undefined ? Number(flags.maxCost) : (ai?.max_cost_usd_per_scan ?? 5);
   if (!Number.isFinite(maxCost) || maxCost <= 0) throw new CliError('--max-cost must be a positive number of USD');
   return {
-    level: level === 'standard' ? 'standard' : 'explain',
+    level: level === 'standard' || level === 'deep' ? level : 'explain',
     provider,
     ...((flags.model ?? ai?.model) ? { model: (flags.model ?? ai?.model) as string } : {}),
     ...(ai?.base_url ? { baseUrl: ai.base_url } : {}),

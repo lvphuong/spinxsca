@@ -1,0 +1,13 @@
+id: 015-dep-reachable-npm
+title: lodash template reachable from an HTTP route
+pair: lodash-template
+variant: vulnerable
+source: src
+expect:
+  findings:
+    - id: GT-1
+      category: VULNERABLE_DEPENDENCY
+      path: package-lock.json
+      vulnerability_id: GHSA-35jh-r3h4-6jhm
+      applicability: AFFECTED
+      reachability: CALLED_FROM_ENTRYPOINT

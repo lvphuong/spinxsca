@@ -21,6 +21,9 @@ import {
   SourceSnapshot,
 } from '@spinxsca/schemas';
 import pg from 'pg';
+import { caseTables } from './case/ddl';
+import { pgDriver } from './case/driver';
+import { SqlCaseRepository } from './case/repository';
 
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -75,7 +78,18 @@ export class PgScanRepository implements ScanRepository {
     this.ready = this.tx(async (c) => {
       await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [schema]);
       await c.query(DDL(this.s));
+      for (const statement of caseTables('pg', `${this.s}.`)) await c.query(statement);
     });
+    this.schema = schema;
+  }
+
+  private readonly schema: string;
+  private caseRepo?: SqlCaseRepository;
+
+  /** Case store (ADR-044) in the same schema and pool. */
+  cases(): SqlCaseRepository {
+    this.caseRepo ??= new SqlCaseRepository(pgDriver(this.pool, this.schema, this.ready));
+    return this.caseRepo;
   }
 
   /** Opens (and creates on first use) the repository in `schema`; pass a shared pool to reuse connections. */

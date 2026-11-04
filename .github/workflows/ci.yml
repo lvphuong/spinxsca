@@ -45,6 +45,12 @@ jobs:
         run: pnpm eval --out evals/results/ci
       - name: Evaluation of the AI pipeline (scripted provider, no API calls)
         run: pnpm spinxsca eval --ai explain --ai-provider scripted --no-stability --out evals/results/ci-ai
+      - name: Governance evaluation (decision matrix)
+        run: pnpm spinxsca eval --suite governance
+      - name: Autonomous review gates (scripted provider, no API calls)
+        run: pnpm spinxsca eval --suite ai --ai-provider scripted --out evals/results/ci-autonomy
+      - name: Desktop app (typecheck, unit tests)
+        run: pnpm --filter @spinxsca/desktop typecheck && pnpm --filter @spinxsca/desktop test
       - name: Upload evaluation results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

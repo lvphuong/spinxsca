@@ -32,6 +32,7 @@ export class AgentRemediator implements Remediator {
     subject: ExplainSubject,
     source: SourceTree,
     signal?: AbortSignal,
+    feedback?: string,
   ): Promise<{ proposal?: PatchProposal; run: AgentRunRecord }> {
     const startedAt = new Date().toISOString();
     const ctx = { source, paths: subject.snapshotPaths, redactions: subject.redactions, findings: subject.related };
@@ -40,7 +41,7 @@ export class AgentRemediator implements Remediator {
       role: 'remediation',
       provider,
       system: this.options.prompts.render('remediation'),
-      prompt: `Fix this finding.\n\n${explainPrompt(subject)}`,
+      prompt: `Fix this finding.\n\n${explainPrompt(subject)}${feedback ? `\n\n<previous_attempt_feedback>\n${feedback}\n</previous_attempt_feedback>` : ''}`,
       tools: createCodeTools(ctx),
       submit: {
         name: 'submit_patch',

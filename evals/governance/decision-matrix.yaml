@@ -1,0 +1,223 @@
+# Golden decision matrix of the policy engine (ADR-041, docs/architecture/08 section 3).
+# Each row is one proposed tool call in one context; `expect` is "<outcome> <layer> [human_only]
+# [flag:<flag>] [rule:<rule>]". A policy change that moves any row must update this file in review.
+# Run: pnpm vitest run packages/governance  |  spinxsca eval --suite governance
+version: 1
+defaults:
+  mode: supervised
+  persona_tools: any
+rows:
+  # ---------------------------------------------------------------- L0 admission
+  - { id: l0-deny-tools, tool: read_file, targets: ["repo_path:src/a.ts"], deny_tools: [read_file], expect: "deny L0 rule:admission.deny_tools" }
+  - { id: l0-not-in-manifest, tool: shell_exec, exec: sandbox, persona_tools: [read_file, search_code], expect: "deny L0 rule:admission.not_in_manifest" }
+  - { id: l0-in-manifest, tool: read_file, targets: ["repo_path:src/a.ts"], persona_tools: [read_file], expect: "allow L7" }
+  - { id: l0-invalid-input, tool: read_file, input_valid: false, expect: "deny L0 rule:admission.invalid_input" }
+  - id: l0-lead-cannot-validate
+    note: the lead persona only has board and journal tools
+    tool: validation_run
+    exec: sandbox
+    targets: ["handle:CF-1"]
+    persona_tools: [board_view, board_create_item, board_update_item, board_assign, journal_record, journal_read]
+    expect: "deny L0"
+  - { id: l0-lead-cannot-shell, tool: shell_exec, exec: sandbox, persona_tools: [board_view, board_create_item, journal_record], expect: "deny L0" }
+  - { id: l0-deny-before-floor, tool: http_request, targets: ["url:https://example.com"], deny_tools: [http_request], expect: "deny L0" }
+  - { id: l0-unknown-tool-outside-manifest, tool: rm_rf, persona_tools: [read_file], expect: "deny L0" }
+  - { id: l0-validator-cannot-patch, tool: patch_propose, targets: ["workspace_path:ws1/src/a.ts"], persona_tools: [read_file, search_code, submit_verdict, validation_run, harness_write], expect: "deny L0" }
+
+  # ---------------------------------------------------------------- L1 self-protection
+  - { id: l1-read-state-dir, tool: read_file, targets: ["repo_path:.spinxsca/spinxsca.db"], expect: "deny L1" }
+  - { id: l1-read-state-dir-bare, tool: list_files, targets: ["repo_path:.spinxsca"], expect: "deny L1" }
+  - { id: l1-read-nested-state, tool: read_file, targets: ["repo_path:apps/web/.spinxsca/artifacts/x"], expect: "deny L1" }
+  - { id: l1-write-config, tool: harness_write, targets: ["workspace_path:ws1/spinxsca.yaml"], expect: "deny L1" }
+  - { id: l1-write-nested-config, tool: patch_propose, targets: ["workspace_path:ws1/config/spinxsca.yml"], expect: "deny L1" }
+  - { id: l1-store-grants, tool: journal_record, targets: ["store:grants"], expect: "deny L1" }
+  - { id: l1-store-approvals, tool: board_update_item, targets: ["store:approvals"], expect: "deny L1" }
+  - { id: l1-store-dispositions, tool: propose_disposition, targets: ["store:dispositions"], expect: "deny L1" }
+  - { id: l1-store-memory-promote, tool: propose_memory, targets: ["store:memory.promote"], expect: "deny L1" }
+  - { id: l1-store-audit, tool: journal_record, targets: ["store:audit"], expect: "deny L1" }
+  - { id: l1-store-baselines-before-human-only, tool: request_disposition, targets: ["store:baselines"], expect: "deny L1" }
+  - { id: l1-host-rule-dir, tool: shell_exec, exec: sandbox, targets: ["host_path:/etc/spinxsca/rules/x.yml"], protected_roots: [/etc/spinxsca/rules], expect: "deny L1" }
+  - { id: l1-before-case-grant, tool: harness_write, targets: ["workspace_path:ws1/.spinxsca/x"], grants: [{ scope: case, tool: harness_write, target: "*", risk: WRITE_WORKSPACE }], expect: "deny L1" }
+  - { id: l1-before-auto-allow, tool: shell_exec, exec: sandbox, targets: ["repo_path:.spinxsca/state"], auto_allow: [shell_exec], expect: "deny L1" }
+  - { id: l1-autonomous, tool: read_file, mode: autonomous, targets: ["repo_path:.spinxsca/kb/x"], expect: "deny L1" }
+
+  # ---------------------------------------------------------------- L2 hard floors
+  - { id: l2-egress, tool: http_request, targets: ["url:https://example.com"], expect: "deny L2 rule:floor.egress" }
+  - { id: l2-host-exec, tool: shell_exec, exec: host, expect: "deny L2 rule:floor.host_exec" }
+  - { id: l2-network-bridge, tool: shell_exec, exec: sandbox, sandbox: { network: bridge }, expect: "deny L2 rule:floor.network" }
+  - { id: l2-network-host, tool: validation_run, exec: sandbox, sandbox: { network: host }, targets: ["handle:CF-1"], expect: "deny L2 rule:floor.network" }
+  - { id: l2-unpinned-image, tool: run_scanner, exec: sandbox, sandbox: { image: "semgrep/semgrep:latest" }, expect: "deny L2 rule:floor.unpinned_image" }
+  - { id: l2-tag-and-digest, tool: shell_exec, exec: sandbox, sandbox: { image: "toolbox:1.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, expect: "allow L7" }
+  - { id: l2-url-target, tool: run_scanner, exec: sandbox, targets: ["url:https://evil.example/x"], expect: "deny L2 rule:floor.network_target" }
+  - { id: l2-network-target, tool: shell_exec, exec: sandbox, targets: ["network:10.0.0.1"], expect: "deny L2 rule:floor.network_target" }
+  - { id: l2-host-path, tool: read_file, targets: ["host_path:/etc/passwd"], expect: "deny L2 rule:floor.host_path" }
+  - { id: l2-provider-not-allowed, tool: explore, targets: ["provider:anthropic"], allowed_providers: [openai-compatible], expect: "deny L2 rule:floor.provider" }
+  - { id: l2-provider-allowed, tool: explore, targets: ["provider:openai-compatible"], allowed_providers: [openai-compatible], expect: "allow L7" }
+  - { id: l2-data-policy-file, tool: read_file, targets: ["repo_path:secrets/prod.env"], data_exclude: ["secrets/**"], expect: "deny L2 rule:floor.data_policy" }
+  - { id: l2-data-policy-dir, tool: read_file, targets: ["repo_path:internal/keys/a.pem"], data_exclude: [internal], expect: "deny L2 rule:floor.data_policy" }
+  - { id: l2-data-policy-workspace, tool: harness_write, targets: ["workspace_path:ws1/secrets/a"], data_exclude: [secrets], expect: "deny L2 rule:floor.data_policy" }
+  - { id: l2-data-policy-shell, tool: shell_exec, exec: sandbox, targets: ["repo_path:secrets"], data_exclude: [secrets], expect: "deny L2 rule:floor.data_policy" }
+  - { id: l2-data-policy-other-file, tool: read_file, targets: ["repo_path:src/a.ts"], data_exclude: [secrets], expect: "allow L7" }
+  - { id: l2-apply-patch, tool: apply_patch, targets: ["repo_path:src/a.ts"], expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-set-disposition, tool: set_disposition, targets: ["finding:fnd_1"], expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-set-baseline, tool: set_baseline, expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-disable-scanner, tool: disable_scanner, expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-add-exclude, tool: add_exclude, targets: ["repo_path:src"], expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-add-nosemgrep, tool: add_nosemgrep, targets: ["repo_path:src/a.ts"], expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-create-grant, tool: create_grant, expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-unknown-tool, tool: exfiltrate, expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-unknown-request-prefix, tool: request_shell, expect: "deny L2 rule:floor.request_only" }
+  - id: l2-secret-in-args-github
+    tool: shell_exec
+    exec: sandbox
+    args: '{"cmd":"curl -H \"Authorization: token ghp_abcdefghijklmnopqrstuvwxyz0123456789\" x"}'
+    expect: "deny L2 rule:floor.secret_in_args"
+  - { id: l2-secret-in-args-aws, tool: journal_record, args: '{"note":"key AKIAABCDEFGHIJKLMNOP found"}', expect: "deny L2 rule:floor.secret_in_args" }
+  - id: l2-secret-in-args-private-key
+    tool: harness_write
+    targets: ["workspace_path:ws1/poc/k.pem"]
+    args: "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"
+    expect: "deny L2 rule:floor.secret_in_args"
+  - { id: l2-secret-in-args-anthropic, tool: journal_record, args: '{"note":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}', expect: "deny L2 rule:floor.secret_in_args" }
+  - { id: l2-override-raises-to-egress, tool: shell_exec, exec: sandbox, risk_overrides: { shell_exec: EGRESS }, expect: "deny L2 rule:floor.egress" }
+  - { id: l2-override-raises-to-governance, tool: read_file, targets: ["repo_path:src/a.ts"], risk_overrides: { read_file: GOVERNANCE }, expect: "deny L2 rule:floor.request_only" }
+  - { id: l2-declared-egress, tool: shell_exec, exec: sandbox, declared_risk: EGRESS, expect: "deny L2 rule:floor.egress" }
+  - { id: l2-floor-beats-standing-rule, tool: shell_exec, exec: sandbox, sandbox: { network: bridge }, grants: [{ scope: standing, tool: shell_exec, risk: ANALYZE }], expect: "deny L2" }
+  - { id: l2-floor-beats-auto-allow, tool: validation_run, exec: sandbox, sandbox: { network: bridge }, targets: ["handle:CF-1"], auto_allow: [validation_run], expect: "deny L2" }
+  - { id: l2-floor-beats-l3-config, tool: validation_run, exec: host, targets: ["handle:CF-1"], validation_l3: true, expect: "deny L2 rule:floor.host_exec" }
+  - { id: l2-floor-autonomous, tool: apply_patch, mode: autonomous, targets: ["repo_path:src/a.ts"], expect: "deny L2" }
+  - { id: l2-url-in-validation, tool: validation_run, exec: sandbox, targets: ["handle:CF-1", "url:http://169.254.169.254/"], validation_l3: true, expect: "deny L2 rule:floor.network_target" }
+  - { id: l2-egress-observe, tool: http_request, mode: observe, expect: "deny L2 rule:floor.egress" }
+
+  # ---------------------------------------------------------------- L3 mode
+  - { id: l3-observe-validation, tool: validation_run, mode: observe, exec: sandbox, targets: ["handle:CF-1"], expect: "deny L3" }
+  - { id: l3-observe-harness, tool: harness_write, mode: observe, targets: ["workspace_path:ws1/poc/t.js"], expect: "deny L3" }
+  - { id: l3-observe-patch, tool: patch_propose, mode: observe, targets: ["workspace_path:ws1/src/a.ts"], expect: "deny L3" }
+  - { id: l3-observe-verify, tool: verify_run, mode: observe, exec: sandbox, targets: ["workspace_path:ws1"], expect: "deny L3" }
+  - { id: l3-observe-request-apply, tool: request_apply, mode: observe, targets: ["workspace_path:ws1"], expect: "deny L3" }
+  - { id: l3-observe-request-pr, tool: request_pr, mode: observe, expect: "deny L3" }
+  - { id: l3-observe-l3-config, tool: validation_run, mode: observe, exec: sandbox, targets: ["handle:CF-1"], validation_l3: true, expect: "deny L3" }
+  - { id: l3-observe-case-grant, tool: harness_write, mode: observe, targets: ["workspace_path:ws1/poc/t.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE }], expect: "deny L3" }
+  - { id: l3-observe-shell, tool: shell_exec, mode: observe, exec: sandbox, targets: ["repo_path:src"], expect: "allow L7" }
+  - { id: l3-observe-scanner, tool: run_scanner, mode: observe, exec: sandbox, expect: "allow L7" }
+  - { id: l3-observe-read, tool: read_file, mode: observe, targets: ["repo_path:src/a.ts"], expect: "allow L7" }
+  - { id: l3-observe-request-tool, tool: request_tool, mode: observe, expect: "ask L6 human_only" }
+
+  # ---------------------------------------------------------------- L4 scope
+  - { id: l4-path-escape, tool: read_file, targets: ["repo_path:../etc/passwd"], expect: "deny L4 rule:scope.path_escape" }
+  - { id: l4-absolute-path, tool: read_file, targets: ["repo_path:/etc/passwd"], expect: "deny L4 rule:scope.path_escape" }
+  - { id: l4-drive-letter, tool: read_file, targets: ["repo_path:C:/Windows/win.ini"], expect: "deny L4 rule:scope.path_escape" }
+  - { id: l4-inner-dotdot, tool: read_file, targets: ["repo_path:src/../../x"], expect: "deny L4 rule:scope.path_escape" }
+  - { id: l4-unknown-workspace, tool: harness_write, targets: ["workspace_path:ws9/a.js"], expect: "deny L4 rule:scope.workspace" }
+  - { id: l4-workspace-escape, tool: harness_write, targets: ["workspace_path:ws1/../../etc/x"], expect: "deny L4 rule:scope.path_escape" }
+  - { id: l4-unknown-handle, tool: validation_run, exec: sandbox, targets: ["handle:CF-99"], expect: "deny L4 rule:scope.handle" }
+  - { id: l4-known-handle, tool: get_finding, targets: ["handle:CF-1"], expect: "allow L7" }
+  - { id: l4-finding-outside-case, tool: get_finding, targets: ["finding:fnd_x"], scope: { findings: [fnd_a] }, expect: "deny L4 rule:scope.finding" }
+  - { id: l4-path-outside-snapshot, tool: read_file, targets: ["repo_path:src/x.ts"], scope: { repo_paths: [src/a.ts] }, expect: "deny L4 rule:scope.repo_path" }
+  - { id: l4-directory-in-snapshot, tool: list_files, targets: ["repo_path:src"], scope: { repo_paths: [src/a.ts] }, expect: "allow L7" }
+  - { id: l4-file-in-snapshot, tool: read_file, targets: ["repo_path:src/a.ts"], scope: { repo_paths: [src/a.ts] }, expect: "allow L7" }
+  - { id: l4-before-case-grant, tool: harness_write, targets: ["workspace_path:ws2/a.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE }], expect: "deny L4" }
+  - { id: l4-before-human-only, tool: request_apply, targets: ["workspace_path:ws9"], expect: "deny L4" }
+  - { id: l4-dot-segments, tool: read_file, targets: ["repo_path:./src/./a.ts"], expect: "allow L7" }
+
+  # ---------------------------------------------------------------- L5 quotas
+  - { id: l5-cost, tool: shell_exec, exec: sandbox, quota: { cost_usd: 10, max_cost_usd: 10 }, expect: "deny L5 rule:quota.cost" }
+  - { id: l5-cost-read-allowed, tool: read_file, targets: ["repo_path:src/a.ts"], quota: { cost_usd: 10, max_cost_usd: 10 }, expect: "allow L7" }
+  - { id: l5-cost-record-allowed, tool: journal_record, quota: { cost_usd: 99, max_cost_usd: 1 }, expect: "allow L7" }
+  - { id: l5-sandbox-runs, tool: run_scanner, exec: sandbox, quota: { sandbox_runs: 60, max_sandbox_runs: 60 }, expect: "deny L5 rule:quota.sandbox_runs" }
+  - { id: l5-sandbox-runs-under, tool: run_scanner, exec: sandbox, quota: { sandbox_runs: 59, max_sandbox_runs: 60 }, expect: "allow L7" }
+  - { id: l5-sandbox-cpu, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], quota: { sandbox_cpu_sec: 1800, max_sandbox_cpu_sec: 1800 }, expect: "deny L5 rule:quota.sandbox_cpu" }
+  - { id: l5-validation-per-finding, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], validation_l3: true, quota: { validation_runs_for_target: 3, max_runs_per_finding: 3 }, expect: "deny L5 rule:quota.validation_runs" }
+  - { id: l5-validation-under-limit, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], validation_l3: true, quota: { validation_runs_for_target: 2, max_runs_per_finding: 3 }, expect: "allow L11" }
+  - { id: l5-harness-cost, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], quota: { cost_usd: 5, max_cost_usd: 5 }, expect: "deny L5 rule:quota.cost" }
+  - { id: l5-before-case-grant, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], quota: { sandbox_runs: 9, max_sandbox_runs: 9 }, grants: [{ scope: case, tool: validation_run, target: "handle:CF-1", risk: EXEC_REPO_CODE }], expect: "deny L5" }
+
+  # ---------------------------------------------------------------- L6 human-only
+  - { id: l6-request-apply, tool: request_apply, targets: ["workspace_path:ws1"], expect: "ask L6 human_only" }
+  - { id: l6-request-pr, tool: request_pr, expect: "ask L6 human_only" }
+  - { id: l6-request-tool, tool: request_tool, expect: "ask L6 human_only" }
+  - { id: l6-memory-promotion, tool: request_memory_promotion, expect: "ask L6 human_only" }
+  - { id: l6-rule-promotion, tool: request_rule_promotion, expect: "ask L6 human_only" }
+  - { id: l6-objective-waiver, tool: request_objective_waiver, expect: "ask L6 human_only" }
+  - { id: l6-standing-rule, tool: request_standing_rule, expect: "ask L6 human_only" }
+  - { id: l6-disposition, tool: request_disposition, targets: ["handle:CF-1"], expect: "ask L6 human_only" }
+  - { id: l6-auto-allow-ignored, tool: request_apply, targets: ["workspace_path:ws1"], auto_allow: [request_apply], expect: "ask L6 human_only" }
+  - { id: l6-case-grant-ignored, tool: request_apply, targets: ["workspace_path:ws1"], grants: [{ scope: case, tool: request_apply, risk: WRITE_REPO }], expect: "ask L6 human_only" }
+  - { id: l6-standing-rule-ignored, tool: request_pr, grants: [{ scope: standing, tool: request_pr, risk: EXTERNAL }], expect: "ask L6 human_only" }
+  - { id: l6-autonomous, tool: request_pr, mode: autonomous, expect: "ask L6 human_only" }
+  - { id: l6-l3-config-ignored, tool: request_apply, targets: ["workspace_path:ws1"], validation_l3: true, expect: "ask L6 human_only" }
+
+  # ---------------------------------------------------------------- L7 low risk
+  - { id: l7-read-file, tool: read_file, targets: ["repo_path:src/a.ts"], expect: "allow L7" }
+  - { id: l7-search-code, tool: search_code, expect: "allow L7" }
+  - { id: l7-list-endpoints, tool: list_endpoints, expect: "allow L7" }
+  - { id: l7-callers, tool: callers, expect: "allow L7" }
+  - { id: l7-kb-lookup, tool: kb_lookup, expect: "allow L7" }
+  - { id: l7-deps-inventory, tool: deps_inventory, expect: "allow L7" }
+  - { id: l7-deps-reachability, tool: deps_reachability, expect: "allow L7" }
+  - { id: l7-explore, tool: explore, expect: "allow L7" }
+  - { id: l7-load-skill, tool: load_skill, expect: "allow L7" }
+  - { id: l7-journal-record, tool: journal_record, expect: "allow L7" }
+  - { id: l7-journal-read, tool: journal_read, expect: "allow L7" }
+  - { id: l7-board-create, tool: board_create_item, expect: "allow L7" }
+  - { id: l7-board-update, tool: board_update_item, expect: "allow L7" }
+  - { id: l7-propose-disposition, tool: propose_disposition, targets: ["handle:CF-1"], expect: "allow L7" }
+  - { id: l7-propose-memory, tool: propose_memory, expect: "allow L7" }
+  - { id: l7-submit-verdict, tool: submit_verdict, targets: ["handle:CF-2"], expect: "allow L7" }
+  - { id: l7-shell, tool: shell_exec, exec: sandbox, targets: ["repo_path:src"], expect: "allow L7" }
+  - { id: l7-scanner, tool: run_scanner, exec: sandbox, expect: "allow L7" }
+  - { id: l7-semgrep-rule, tool: semgrep_rule, exec: sandbox, expect: "allow L7" }
+  - { id: l7-autonomous-read, tool: read_file, mode: autonomous, targets: ["repo_path:src/a.ts"], expect: "allow L7" }
+  - { id: l7-shell-lowering-ignored, tool: shell_exec, exec: sandbox, risk_overrides: { shell_exec: READ }, expect: "allow L7" }
+
+  # ---------------------------------------------------------------- L8 protected targets (flag only)
+  - { id: l8-workflow, tool: patch_propose, targets: ["workspace_path:ws1/.github/workflows/ci.yml"], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-dockerfile, tool: patch_propose, targets: ["workspace_path:ws1/Dockerfile"], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-package-json, tool: patch_propose, targets: ["workspace_path:ws1/package.json"], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-auth-module, tool: patch_propose, targets: ["workspace_path:ws1/src/auth/session.ts"], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-git-hook, tool: harness_write, targets: ["workspace_path:ws1/.git/hooks/pre-commit"], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-extra-protected, tool: patch_propose, targets: ["workspace_path:ws1/deploy/k8s.yaml"], extra_protected: [deploy], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-no-standing-rule, tool: patch_propose, targets: ["workspace_path:ws1/.github/workflows/ci.yml"], grants: [{ scope: standing, tool: patch_propose, risk: WRITE_WORKSPACE }], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-no-auto-allow, tool: patch_propose, targets: ["workspace_path:ws1/Dockerfile"], auto_allow: [patch_propose], expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-no-l3-config, tool: harness_write, targets: ["workspace_path:ws1/Makefile"], validation_l3: true, expect: "ask L12 flag:protectedTouched" }
+  - { id: l8-exact-case-grant, tool: patch_propose, targets: ["workspace_path:ws1/Dockerfile"], grants: [{ scope: case, tool: patch_propose, target: "workspace_path:ws1/Dockerfile", risk: WRITE_WORKSPACE }], expect: "allow L9 flag:protectedTouched" }
+  - { id: l8-wildcard-case-grant, tool: patch_propose, targets: ["workspace_path:ws1/Dockerfile"], grants: [{ scope: case, tool: patch_propose, risk: WRITE_WORKSPACE }], expect: "ask L12 flag:protectedTouched" }
+
+  # ---------------------------------------------------------------- L9 case grants
+  - { id: l9-exact, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], grants: [{ scope: case, tool: validation_run, target: "handle:CF-1", risk: EXEC_REPO_CODE }], expect: "allow L9" }
+  - { id: l9-other-target, tool: validation_run, exec: sandbox, targets: ["handle:CF-2"], grants: [{ scope: case, tool: validation_run, target: "handle:CF-1", risk: EXEC_REPO_CODE }], expect: "ask L12" }
+  - { id: l9-wildcard, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE }], expect: "allow L9" }
+  - { id: l9-other-case, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE, case_id: case_other }], expect: "ask L12" }
+  - { id: l9-expired, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE, expired: true }], expect: "ask L12" }
+  - { id: l9-revoked, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE, revoked: true }], expect: "ask L12" }
+  - { id: l9-other-tool, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: case, tool: patch_propose, risk: WRITE_WORKSPACE }], expect: "ask L12" }
+  - { id: l9-risk-raised-after-grant, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], risk_overrides: { harness_write: EXEC_REPO_CODE }, grants: [{ scope: case, tool: harness_write, risk: WRITE_WORKSPACE }], expect: "ask L12" }
+  - { id: l9-autonomous, tool: verify_run, mode: autonomous, exec: sandbox, targets: ["workspace_path:ws1"], grants: [{ scope: case, tool: verify_run, risk: EXEC_REPO_CODE }], expect: "allow L9" }
+
+  # ---------------------------------------------------------------- L10 standing rules
+  - { id: l10-glob, tool: patch_propose, targets: ["workspace_path:ws1/src/db/query.ts"], grants: [{ scope: standing, tool: patch_propose, target: "src/db/**", risk: WRITE_WORKSPACE }], expect: "allow L10" }
+  - { id: l10-glob-miss, tool: patch_propose, targets: ["workspace_path:ws1/lib/x.ts"], grants: [{ scope: standing, tool: patch_propose, target: "src/**", risk: WRITE_WORKSPACE }], expect: "ask L12" }
+  - { id: l10-other-project, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: standing, tool: harness_write, risk: WRITE_WORKSPACE, project_id: prj_other }], expect: "ask L12" }
+  - { id: l10-wildcard, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: standing, tool: harness_write, risk: WRITE_WORKSPACE }], expect: "allow L10" }
+  - { id: l10-expired, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], grants: [{ scope: standing, tool: harness_write, risk: WRITE_WORKSPACE, expired: true }], expect: "ask L12" }
+  - { id: l10-lower-risk-grant, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], grants: [{ scope: standing, tool: validation_run, risk: WRITE_WORKSPACE }], expect: "ask L12" }
+
+  # ---------------------------------------------------------------- L11 operator configuration
+  - { id: l11-auto-allow-harness, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], auto_allow: [harness_write], expect: "allow L11 rule:config.auto_allow" }
+  - { id: l11-auto-allow-validation, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], auto_allow: [validation_run], expect: "allow L11 rule:config.auto_allow" }
+  - { id: l11-auto-allow-other-tool, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], auto_allow: [validation_run], expect: "ask L12" }
+  - { id: l11-l3-validation, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], validation_l3: true, expect: "allow L11 rule:config.validation_l3" }
+  - { id: l11-l3-harness, tool: harness_write, targets: ["workspace_path:ws1/poc/a.js"], validation_l3: true, expect: "allow L11 rule:config.validation_l3" }
+  - { id: l11-l3-not-patch, tool: patch_propose, targets: ["workspace_path:ws1/src/a.ts"], validation_l3: true, expect: "ask L12" }
+  - { id: l11-l3-not-verify, tool: verify_run, exec: sandbox, targets: ["workspace_path:ws1"], validation_l3: true, expect: "ask L12" }
+  - { id: l11-l3-autonomous, tool: validation_run, mode: autonomous, exec: sandbox, targets: ["handle:CF-1"], validation_l3: true, expect: "allow L11" }
+  - { id: l11-auto-allow-governance-ignored, tool: set_baseline, auto_allow: [set_baseline], expect: "deny L2" }
+  - { id: l11-auto-allow-egress-ignored, tool: http_request, auto_allow: [http_request], expect: "deny L2" }
+
+  # ---------------------------------------------------------------- L12 default ask
+  - { id: l12-harness, tool: harness_write, targets: ["workspace_path:ws1/poc/exploit.test.js"], expect: "ask L12" }
+  - { id: l12-patch, tool: patch_propose, targets: ["workspace_path:ws1/src/db.ts"], expect: "ask L12" }
+  - { id: l12-validation, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], expect: "ask L12" }
+  - { id: l12-verify, tool: verify_run, exec: sandbox, targets: ["workspace_path:ws1"], expect: "ask L12" }
+  - { id: l12-autonomous-validation, tool: validation_run, mode: autonomous, exec: sandbox, targets: ["handle:CF-1"], expect: "ask L12" }
+  - { id: l12-lowering-ignored, tool: validation_run, exec: sandbox, targets: ["handle:CF-1"], risk_overrides: { validation_run: READ }, expect: "ask L12" }

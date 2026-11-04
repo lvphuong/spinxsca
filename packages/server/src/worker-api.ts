@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { JobEvents } from './events';
 import { snapshotBundle } from './kb-signing';
 import { type JobEntry, REMOTE_JOB_KINDS, type Registry, type WorkerEntry } from './registry';
-import { decode, encode, REPOSITORY_METHODS, WRITE_METHODS } from './rpc';
+import { CASE_WRITES, decode, encode, REPOSITORY_METHODS, WRITE_METHODS, workerMayCall } from './rpc';
 import type { ProjectStates } from './state';
 import { publicProject } from './views';
 
@@ -133,6 +133,26 @@ export function mountWorkerApi(app: Hono, ctx: WorkerApiContext): void {
     if (WRITES.has(method) && !registry.holdsLease(job.jobId, job.fencing, clock.now()))
       throw new HTTPException(409, { message: 'lease lost' });
     const result = await fn.apply(repo as unknown as ScanRepository, args);
+    return c.body(encode({ result }), 200, { 'content-type': 'application/json' });
+  });
+
+  // Case store of review jobs (ADR-047): never a human decision (approval, grant, memory status).
+  w.post('/v1/worker/jobs/:jobId/cases', lease, async (c) => {
+    const job = c.get('job');
+    const { method, args } = decode<{ method: string; args: unknown[] }>(await c.req.text());
+    if (!workerMayCall(method) || !Array.isArray(args))
+      throw new HTTPException(400, { message: `method ${method} is not available to workers` });
+    if (job.kind !== 'REVIEW' && job.kind !== 'CASE_RESUME')
+      throw new HTTPException(403, { message: 'only review jobs use the case store' });
+    const cases = states.get(job.projectId as string).cases as unknown as Record<
+      string,
+      (...a: unknown[]) => Promise<unknown>
+    >;
+    const fn = cases[method];
+    if (!fn) throw new HTTPException(400, { message: `unknown method ${method}` });
+    if (CASE_WRITES.has(method) && !registry.holdsLease(job.jobId, job.fencing, clock.now()))
+      throw new HTTPException(409, { message: 'lease lost' });
+    const result = await fn.apply(cases, args);
     return c.body(encode({ result }), 200, { 'content-type': 'application/json' });
   });
 

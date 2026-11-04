@@ -2,8 +2,8 @@ import type { FindingAssessment } from '@spinxsca/schemas';
 import { describe, expect, it } from 'vitest';
 import { digestOf, stableStringify, ulid } from '../src/ids';
 import { manifestChangeCauses } from '../src/manifest';
-import { evaluatePolicy } from '../src/policy';
-import { redactSecrets } from '../src/redact';
+import { evaluatePolicy, gateView } from '../src/policy';
+import { createSecretScrubber, redactSecrets } from '../src/redact';
 
 const assessment = (state: FindingAssessment['reconciliationState'], severity: FindingAssessment['severity']) =>
   ({ reconciliationState: state, severity }) as FindingAssessment;
@@ -94,5 +94,51 @@ describe('manifestChangeCauses', () => {
         ),
       ),
     ).toEqual(['CODE_CHANGE', 'SCANNER_UPGRADED']);
+  });
+});
+
+describe('untrusted AI downgrades (ADR-041)', () => {
+  const ai = {
+    findingId: 'f1',
+    reconciliationState: 'NEW',
+    classification: 'UNLIKELY',
+    severity: 'LOW',
+    severityBaseline: 'HIGH',
+    assessedBy: 'agent:explain/claude',
+  } as FindingAssessment;
+
+  it('gates on max(baseline, AI) and ignores AI UNLIKELY by default', () => {
+    expect(gateView(ai, false)).toEqual({ severity: 'HIGH', exempt: false });
+    expect(evaluatePolicy([ai], { failOnSeverity: 'HIGH', newFindingsOnly: true }).passed).toBe(false);
+  });
+
+  it('trusts the AI only when configured', () => {
+    expect(gateView(ai, true)).toEqual({ severity: 'LOW', exempt: true });
+    expect(
+      evaluatePolicy([ai], { failOnSeverity: 'HIGH', newFindingsOnly: true, trustAiDowngrades: true }).passed,
+    ).toBe(true);
+  });
+
+  it('keeps AI upgrades and host assessments as they are', () => {
+    expect(gateView({ ...ai, classification: 'CONFIRMED', severity: 'CRITICAL' }, false).severity).toBe('CRITICAL');
+    expect(gateView({ ...ai, assessedBy: 'host:scanner-l1' }, false)).toEqual({ severity: 'LOW', exempt: true });
+  });
+});
+
+describe('secret scrubber', () => {
+  it('replaces known values with a stable hash tag and generic patterns', () => {
+    const scrubber = createSecretScrubber({ knownValues: ['hunter2-long-secret', 'abc'] });
+    const out = scrubber.scrub('pw=hunter2-long-secret and AKIAABCDEFGHIJKLMNOP');
+    expect(out).not.toContain('hunter2-long-secret');
+    expect(out).toMatch(/<REDACTED:secret:[0-9a-f]{8}>/);
+    expect(out).toContain('<REDACTED:aws-access-key>');
+    expect(scrubber.size).toBe(1);
+    expect(scrubber.detects('x hunter2-long-secret')).toBe(true);
+    expect(scrubber.detects('nothing here')).toBe(false);
+  });
+
+  it('replaces the longest value first', () => {
+    const scrubber = createSecretScrubber({ knownValues: ['secret-one', 'secret-one-two'], patterns: false });
+    expect(scrubber.scrub('secret-one-two')).toMatch(/^<REDACTED:secret:[0-9a-f]{8}>$/);
   });
 });

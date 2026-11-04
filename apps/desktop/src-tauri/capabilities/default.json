@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal permissions of the main window: open a folder, notify, open https links, the app's own commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "dialog:allow-open",
+    "notification:default",
+    { "identifier": "opener:allow-open-url", "allow": [{ "url": "https://*" }] },
+    "allow-docker-status",
+    "allow-provider-key-present",
+    "allow-set-provider-key",
+    "allow-delete-provider-key",
+    "allow-sidecar-status"
+  ]
+}

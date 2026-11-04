@@ -1,8 +1,19 @@
+import type { ActionTarget, RiskClass } from '@spinxsca/schemas';
 import { z } from 'zod';
 import type { ToolSpec } from '../llm/types';
 
 export interface ToolContext {
   signal?: AbortSignal;
+  /** Set when the call runs inside a governed review case. */
+  caseId?: string;
+  runId?: string;
+  toolCallId?: string;
+}
+
+export interface SandboxSpec {
+  network: string;
+  image: string;
+  profile: string;
 }
 
 /** A read or action tool exposed to the model. Inputs are validated before `run` is called. */
@@ -11,6 +22,18 @@ export interface AgentTool<I = unknown> {
   description: string;
   input: z.ZodType<I>;
   run(input: I, ctx: ToolContext): Promise<string>;
+  /** Declared risk (ADR-041); it can only raise the catalog risk, never lower it. */
+  risk?: RiskClass;
+  /** Safe to run again after a crash; defaults to true for READ and ANALYZE tools only. */
+  idempotent?: boolean;
+  /** What the call acts on (paths, handles, workspaces), for the policy engine. */
+  targets?(input: I): ActionTarget[];
+  /** Sandbox the call runs in; absent for host-side bookkeeping tools. */
+  sandbox?(input: I): SandboxSpec | undefined;
+  /** Maximum characters of output returned to the model (default 20 000). */
+  outputLimit?: number;
+  /** Plain-language description of one call for approval cards. */
+  describe?(input: I): { title: string; summary?: string; diff?: string };
 }
 
 /**

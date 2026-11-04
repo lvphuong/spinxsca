@@ -24,6 +24,7 @@ export function gatePolicy(
     requireCompleteCoverage: gate?.require_complete_coverage ?? DEFAULT_GATE_POLICY.requireCompleteCoverage,
     ...(gate?.epss_threshold !== undefined ? { epssThreshold: gate.epss_threshold } : {}),
     ...(gate?.max_kb_age_hours !== undefined ? { maxKbAgeHours: gate.max_kb_age_hours } : {}),
+    trustAiDowngrades: gate?.trust_ai_downgrades ?? false,
   };
   if (overrides.maxScanAge) policy.maxScanAgeHours = parseHours(overrides.maxScanAge);
   if (overrides.failOn) policy.failOnSeverity = parseSeverity(overrides.failOn);

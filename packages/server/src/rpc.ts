@@ -41,6 +41,65 @@ export const WRITE_METHODS = [
 export type RepositoryMethod = (typeof READ_METHODS)[number] | (typeof WRITE_METHODS)[number];
 export const REPOSITORY_METHODS: ReadonlySet<string> = new Set([...READ_METHODS, ...WRITE_METHODS]);
 
+/**
+ * Case store calls a remote worker may make while running a REVIEW or CASE_RESUME job (ADR-047).
+ * Writes are fenced like repository writes. Human operations are listed separately and are never
+ * routed for a worker, whatever the job.
+ */
+export const CASE_READ_METHODS = [
+  'getCase',
+  'listCases',
+  'listObjectives',
+  'getWorkItem',
+  'listWorkItems',
+  'listJournal',
+  'listAudit',
+  'listAgentSteps',
+  'getToolCall',
+  'listToolCalls',
+  'getApproval',
+  'findApproval',
+  'listApprovals',
+  'listGrants',
+  'getLedger',
+  'listChecks',
+  'listVerdicts',
+  'listHandles',
+  'listMemory',
+] as const;
+export const CASE_WRITE_METHODS = [
+  'createCase',
+  'updateCase',
+  'saveObjectives',
+  'saveWorkItem',
+  'appendJournal',
+  'appendAudit',
+  'saveAgentStep',
+  'saveToolCall',
+  'createApproval',
+  'chargeLedger',
+  'saveCheck',
+  'saveVerdict',
+  'saveHandles',
+  'saveMemory',
+] as const;
+/** Decisions only a human (through the API, CLI or desktop app) can make. */
+export const CASE_HUMAN_METHODS = [
+  'resolveApproval',
+  'saveGrant',
+  'revokeGrant',
+  'updateMemoryStatus',
+  'waiveObjective',
+] as const;
+export type CaseMethod = (typeof CASE_READ_METHODS)[number] | (typeof CASE_WRITE_METHODS)[number];
+export const CASE_METHODS: ReadonlySet<string> = new Set([...CASE_READ_METHODS, ...CASE_WRITE_METHODS]);
+export const CASE_WRITES: ReadonlySet<string> = new Set(CASE_WRITE_METHODS);
+
+/** True when a worker may call the case method (never a human-only one). */
+export function workerMayCall(method: string): method is CaseMethod {
+  return CASE_METHODS.has(method) && !(CASE_HUMAN_METHODS as readonly string[]).includes(method);
+}
+
 /** JSON with Map and Set preserved (fingerprintIndex and latestByFinding return Maps). */
 export function encode(value: unknown): string {
   return JSON.stringify(value, (_key, v) => {

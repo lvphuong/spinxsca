@@ -19,6 +19,7 @@ export class JobEvents {
   ) {}
 
   async completed(job: JobEntry, result: Record<string, unknown>): Promise<void> {
+    await this.reviewCompleted(job, result);
     const project = job.projectId ? this.o.registry.project(job.projectId) : undefined;
     const ids = Array.isArray(result.newFindings) ? (result.newFindings as string[]) : [];
     if (!project || ids.length === 0 || typeof result.scanId !== 'string') return;
@@ -51,6 +52,31 @@ export class JobEvents {
       ...(this.o.publicUrl
         ? { url: `${this.o.publicUrl}/ui/projects/${project.projectId}?branch=${encodeURIComponent(branch)}` }
         : {}),
+    });
+  }
+
+  /** A review case parked for a human, or finished (ADR-047). */
+  private async reviewCompleted(job: JobEntry, result: Record<string, unknown>): Promise<void> {
+    const review = result.review as { caseId?: string; status?: string } | undefined;
+    const project = job.projectId ? this.o.registry.project(job.projectId) : undefined;
+    if (!project || !review?.caseId) return;
+    const cases = this.o.states.get(project.projectId).cases;
+    const pending = await cases.listApprovals({ caseId: review.caseId, status: 'PENDING' });
+    const branch = String(result.branch ?? job.payload.branch ?? '');
+    await this.o.notifier.send({
+      event: review.status === 'PARKED' ? 'approval.requested' : 'case.completed',
+      project: { projectId: project.projectId, name: project.name },
+      branch,
+      ...(typeof result.scanId === 'string' ? { scanId: result.scanId } : {}),
+      jobId: job.jobId,
+      trigger: (job.payload.trigger as NotificationEvent['trigger']) ?? 'api',
+      findings: [],
+      case: {
+        caseId: review.caseId,
+        status: review.status ?? 'UNKNOWN',
+        pendingApprovals: pending.map((a) => ({ approvalId: a.approvalId, title: a.title, humanOnly: a.humanOnly })),
+      },
+      ...(this.o.publicUrl ? { url: `${this.o.publicUrl}/ui/inbox` } : {}),
     });
   }
 

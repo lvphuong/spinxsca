@@ -4,5 +4,6 @@ export { classifyControl } from './extractors/common';
 export { type AuthContext, buildEdges, CodeGraph, resolveModule, type SymbolQuery } from './graph';
 export { computeImpact, type ImpactReport } from './impact';
 export { getParser, languageOfPath } from './parser';
+export { dependencyUsage, importMatcher } from './reachability';
 export { CodeIntelService } from './service';
 export * from './types';

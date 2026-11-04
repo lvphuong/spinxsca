@@ -1,17 +1,24 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyPatchToRepository, fixFinding, SpinxscaError, verifyFix } from '@spinxsca/core';
+import {
+  applyPatchToRepository,
+  fixFindingIteratively,
+  type RemediationDeps,
+  SpinxscaError,
+  verifyFix,
+} from '@spinxsca/core';
 import { runProjectTests } from '@spinxsca/sandbox';
 import pc from 'picocolors';
+import type { LoadedConfig } from '../config';
 import { loadConfig } from '../config';
 import { type AiFlags, aiOptions, type CommonOptions, requireFinding, withEngine } from '../context';
-import { openEngine, scanDeps } from '../engine';
+import { type Engine, openEngine, scanDeps } from '../engine';
 import { CliError, EXIT, status } from '../ui';
 
 export async function fixCommand(
   findingId: string,
   path: string | undefined,
-  options: CommonOptions & AiFlags & { apply?: boolean; patch?: string },
+  options: CommonOptions & AiFlags & { apply?: boolean; patch?: string; iterate?: string | boolean },
 ): Promise<number> {
   const loaded = loadConfig(options.config);
   const ai = aiOptions(loaded, { ...options, ai: 'explain' }, true);
@@ -31,34 +38,22 @@ export async function fixCommand(
         `proposing a fix for ${findingId} with ${engine.remediator.info.provider}/${engine.remediator.info.model}; the patch is applied to a copy under .spinxsca/patches and verified by re-scan and tests`,
       );
     try {
-      const result = await fixFinding(
-        {
-          scan: scanDeps(engine),
-          remediator: engine.remediator,
-          openWorkspace: async (stateDir) => {
-            const engines: Array<ReturnType<typeof openEngine>> = [];
-            return {
-              deps: (sourceDir) => {
-                const e = openEngine({
-                  scanRoot: sourceDir,
-                  stateDir,
-                  config: loaded,
-                  kbDir: join(stateDir, 'kb'),
-                  logger: engine.logger,
-                });
-                engines.push(e);
-                return scanDeps(e);
-              },
-              close: () => {
-                for (const e of engines) e.close();
-              },
-            };
-          },
-          runTests: (workspace, signal) => runProjectTests(engine.sandbox, workspace, signal),
-          patchesDir,
+      const iterations =
+        options.iterate === undefined || options.iterate === false
+          ? 1
+          : options.iterate === true
+            ? (loaded.config.ai?.remediation?.max_iterations ?? 3)
+            : Number(options.iterate);
+      if (!Number.isInteger(iterations) || iterations < 1 || iterations > 5)
+        throw new CliError('--iterate takes 1 to 5');
+      const { result, attempts } = await fixFindingIteratively(remediationDeps(engine, loaded, patchesDir), findingId, {
+        maxIterations: iterations,
+        onAttempt: (r, n) => {
+          if (!options.json && iterations > 1)
+            status(`attempt ${n}/${iterations}: ${r.status}${r.reason ? ` — ${r.reason}` : ''}`);
         },
-        findingId,
-      );
+      });
+      if (!options.json && attempts.length > 1) status(`${attempts.length} attempts; showing the last`);
       if (options.json) {
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       } else {
@@ -118,4 +113,34 @@ export async function verifyFixCommand(
       throw err;
     }
   });
+}
+
+/** Fix verification over scratch engines: original and patched copies scanned with the same scanners. */
+export function remediationDeps(engine: Engine, loaded: LoadedConfig, patchesDir: string): RemediationDeps {
+  if (!engine.remediator) throw new CliError('AI remediation unavailable');
+  return {
+    scan: scanDeps(engine),
+    remediator: engine.remediator,
+    openWorkspace: async (stateDir) => {
+      const engines: Array<ReturnType<typeof openEngine>> = [];
+      return {
+        deps: (sourceDir) => {
+          const e = openEngine({
+            scanRoot: sourceDir,
+            stateDir,
+            config: loaded,
+            kbDir: join(stateDir, 'kb'),
+            logger: engine.logger,
+          });
+          engines.push(e);
+          return scanDeps(e);
+        },
+        close: () => {
+          for (const e of engines) e.close();
+        },
+      };
+    },
+    runTests: (workspace, signal) => runProjectTests(engine.sandbox, workspace, signal),
+    patchesDir,
+  };
 }

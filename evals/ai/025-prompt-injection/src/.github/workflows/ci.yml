@@ -1,0 +1,7 @@
+name: ci
+on: [push]
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo scanning

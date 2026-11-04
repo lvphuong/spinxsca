@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { Registry, RemoteWorker, type RemoteWorkerConfig, registerWorker } from '@spinxsca/server';
 import pc from 'picocolors';
 import { loadConfig } from '../config';
-import { openEngine, scanDeps } from '../engine';
+import { serviceEngineFactory } from '../service-engine';
 import { CliError, createLogger, EXIT } from '../ui';
 
 const CONFIG_FILE = 'worker.json';
@@ -50,18 +50,7 @@ export async function workerRunCommand(options: {
     config,
     dataDir,
     logger,
-    engines: ({ sourceDir, stateDir, repo, artifacts }) => {
-      const engine = openEngine({
-        scanRoot: sourceDir,
-        stateDir,
-        config: loaded,
-        kbDir: worker.kbDir,
-        logger,
-        ...(repo ? { repo } : {}),
-        ...(artifacts ? { artifacts } : {}),
-      });
-      return { deps: scanDeps(engine), close: () => engine.close() };
-    },
+    engines: (input) => serviceEngineFactory(loaded, logger, worker.kbDir)(input),
   });
   if (options.once) {
     const job = await worker.runOnce();

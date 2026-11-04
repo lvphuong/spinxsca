@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ArtifactStore, ScanRepository } from '@spinxsca/core';
+import type { ArtifactStore, CaseRepository, ScanRepository } from '@spinxsca/core';
 import { FsArtifactStore, PgScanRepository, SqliteScanRepository } from '@spinxsca/storage';
 import pg from 'pg';
 import type { ProjectWorkspace } from './workspace';
 
 export interface ProjectState {
   repo: ScanRepository;
+  /** Review cases, approvals (inbox), grants and memory of the project (ADR-047). */
+  cases: CaseRepository;
   artifacts: ArtifactStore;
   /** Engine project id inside the state database (undefined before the first scan). */
   engineProjectId(): Promise<string | undefined>;
@@ -42,6 +44,7 @@ export class ProjectStates {
       : SqliteScanRepository.open(join(dir, 'state.db'));
     const state: ProjectState = {
       repo,
+      cases: repo.cases(),
       artifacts: new FsArtifactStore(join(dir, 'artifacts')),
       engineProjectId: async () => (await repo.getProject())?.project.projectId,
     };

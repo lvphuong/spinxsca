@@ -55,7 +55,7 @@ function restrictSubject<T extends { snapshotPaths: readonly string[] }>(
   return { ...subject, snapshotPaths: subject.snapshotPaths.filter(allows) };
 }
 
-function restrictSource(source: SourceTree, allows: (p: string) => boolean): SourceTree {
+export function restrictSource(source: SourceTree, allows: (p: string) => boolean): SourceTree {
   return {
     root: source.root,
     listFiles: async (o) => (await source.listFiles(o)).filter((f) => allows(f.path)),
@@ -64,7 +64,7 @@ function restrictSource(source: SourceTree, allows: (p: string) => boolean): Sou
   };
 }
 
-function restrictGraph(graph: CodeGraphView, allows: (p: string) => boolean): CodeGraphView {
+export function restrictGraph(graph: CodeGraphView, allows: (p: string) => boolean): CodeGraphView {
   const ok = (key: string) => {
     const s = graph.getSymbol(key);
     return !s || allows(s.path);
@@ -92,6 +92,11 @@ function restrictGraph(graph: CodeGraphView, allows: (p: string) => boolean): Co
           }
         : undefined;
     },
+    ...(graph.importsOf ? { importsOf: (path: string) => (allows(path) ? (graph.importsOf?.(path) ?? []) : []) } : {}),
+    ...(graph.callSitesIn
+      ? { callSitesIn: (path: string) => (allows(path) ? (graph.callSitesIn?.(path) ?? []) : []) }
+      : {}),
+    ...(graph.filePaths ? { filePaths: () => (graph.filePaths?.() ?? []).filter(allows) } : {}),
   };
 }
 
@@ -142,8 +147,8 @@ export function withDataPolicy(
   if ('propose' in role) {
     return {
       info: role.info,
-      propose: async (subject: ExplainSubject, source: SourceTree, signal?: AbortSignal) =>
-        role.propose(restrictExplainSubject(subject, allows), restrictSource(source, allows), signal),
+      propose: async (subject: ExplainSubject, source: SourceTree, signal?: AbortSignal, feedback?: string) =>
+        role.propose(restrictExplainSubject(subject, allows), restrictSource(source, allows), signal, feedback),
     } satisfies Remediator;
   }
   return {

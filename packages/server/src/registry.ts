@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
 export type Role = 'admin' | 'member' | 'viewer';
 export const ROLE_RANK: Record<Role, number> = { viewer: 0, member: 1, admin: 2 };
 
+/** Per-project AI settings set by an admin (operator configuration; never read from the repository). */
+export interface ProjectAiConfig {
+  level: 'off' | 'explain' | 'standard' | 'deep';
+  goal?: string;
+  objectives?: string[];
+}
+
 export interface ProjectEntry {
   projectId: string;
   name: string;
@@ -85,6 +92,7 @@ export interface ProjectEntry {
   workerPool: string;
   webhookSecret: string;
   createdAt: string;
+  ai?: ProjectAiConfig;
 }
 
 export interface TokenEntry {
@@ -96,7 +104,7 @@ export interface TokenEntry {
   revokedAt?: string;
 }
 
-export type JobKind = 'SCAN' | 'REASSESS' | 'KB_SYNC';
+export type JobKind = 'SCAN' | 'REASSESS' | 'KB_SYNC' | 'REVIEW' | 'CASE_RESUME';
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
 export interface JobEntry {
@@ -131,7 +139,7 @@ export interface WorkerEntry {
 }
 
 /** Jobs that remote workers may run; KB_SYNC stays on the control plane. */
-export const REMOTE_JOB_KINDS: readonly JobKind[] = ['SCAN', 'REASSESS'];
+export const REMOTE_JOB_KINDS: readonly JobKind[] = ['SCAN', 'REASSESS', 'REVIEW', 'CASE_RESUME'];
 
 export interface AuditEntry {
   seq: number;
@@ -167,6 +175,7 @@ export class Registry {
     this.addColumn('projects', 'worker_pool', "TEXT NOT NULL DEFAULT 'default'");
     this.addColumn('worker_provisioning', 'max_uses', 'INTEGER NOT NULL DEFAULT 1');
     this.addColumn('worker_provisioning', 'uses', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumn('projects', 'ai_config', 'TEXT');
   }
 
   private addColumn(table: string, column: string, definition: string): void {
@@ -218,6 +227,15 @@ export class Registry {
   project(projectId: string): ProjectEntry | undefined {
     const row = this.db.prepare('SELECT * FROM projects WHERE project_id = ?').get(projectId) as ProjectRow | undefined;
     return row ? toProject(row) : undefined;
+  }
+
+  /** Sets (or clears with null) the AI settings of a project. */
+  setProjectAi(projectId: string, ai: ProjectAiConfig | null): boolean {
+    return (
+      this.db
+        .prepare('UPDATE projects SET ai_config = ? WHERE project_id = ?')
+        .run(ai ? JSON.stringify(ai) : null, projectId).changes === 1
+    );
   }
 
   projects(): ProjectEntry[] {
@@ -357,7 +375,7 @@ export class Registry {
   ): JobEntry | undefined {
     const at = now.toISOString();
     const pools = options.pools ?? ['default', CONTROL_POOL];
-    const kinds = options.kinds ?? ['SCAN', 'REASSESS', 'KB_SYNC'];
+    const kinds = options.kinds ?? ['SCAN', 'REASSESS', 'KB_SYNC', 'REVIEW', 'CASE_RESUME'];
     return this.db.transaction(() => {
       const row = this.db
         .prepare(
@@ -593,6 +611,7 @@ interface ProjectRow {
   worker_pool: string;
   webhook_secret: string;
   created_at: string;
+  ai_config?: string | null;
 }
 interface TokenRow {
   token_id: string;
@@ -648,6 +667,7 @@ function toProject(r: ProjectRow): ProjectEntry {
     workerPool: r.worker_pool,
     webhookSecret: r.webhook_secret,
     createdAt: r.created_at,
+    ...(r.ai_config ? { ai: JSON.parse(r.ai_config) as ProjectAiConfig } : {}),
   };
 }
 function toToken(r: TokenRow): TokenEntry {

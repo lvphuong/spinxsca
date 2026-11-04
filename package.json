@@ -22,7 +22,8 @@
     "images:pin": "tsx scripts/pin-images.ts",
     "rules:test": "tsx scripts/test-rules.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
-    "images:pull": "tsx scripts/pull-images.ts"
+    "images:pull": "tsx scripts/pull-images.ts",
+    "toolbox:build": "tsx scripts/build-toolbox.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",

@@ -1,0 +1,9 @@
+id: 019-pathtrav-fixed
+title: Path traversal in a static file route (fixed)
+pair: pathtrav
+variant: fixed
+source: src
+l3: true
+expect:
+  findings: []
+  no_confirmed_poc: true

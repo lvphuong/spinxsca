@@ -17,6 +17,8 @@ export interface Remediator {
     subject: ExplainSubject,
     source: SourceTree,
     signal?: AbortSignal,
+    /** Feedback from the previous attempt (re-scan, tests, reviewer) when iterating. */
+    feedback?: string,
   ): Promise<{ proposal?: PatchProposal; run: AgentRunRecord }>;
 }
 
@@ -46,7 +48,52 @@ const NON_CODE_SCANNERS = new Set(['osv-scanner', 'gitleaks', 'trivy']);
  * so identities line up, runs the project's tests in the sandbox, and only a patch whose finding is
  * RESOLVED with passing tests is `verified`. Nothing is written to the repository.
  */
-export async function fixFinding(deps: RemediationDeps, findingId: string, signal?: AbortSignal): Promise<PatchResult> {
+/**
+ * `spinxsca fix --iterate` and case remediation (ADR-045): repeats `fixFinding` with the previous
+ * attempt's verification as feedback until a patch is verified or the iterations run out. Every
+ * attempt is a separate, fully verified patch; nothing is applied.
+ */
+export async function fixFindingIteratively(
+  deps: RemediationDeps,
+  findingId: string,
+  options: {
+    maxIterations: number;
+    feedback?: string;
+    signal?: AbortSignal;
+    onAttempt?: (r: PatchResult, n: number) => void;
+  },
+): Promise<{ result: PatchResult; attempts: PatchResult[] }> {
+  const attempts: PatchResult[] = [];
+  let feedback = options.feedback;
+  for (let n = 1; n <= Math.max(1, options.maxIterations); n++) {
+    const result = await fixFinding(deps, findingId, options.signal, feedback);
+    attempts.push(result);
+    options.onAttempt?.(result, n);
+    if (result.status === 'verified' || result.status === 'rescan_passed' || result.status === 'no_change') break;
+    if (result.status === 'failed' && !result.proposal) break;
+    feedback = attemptFeedback(result, n);
+  }
+  return { result: attempts.at(-1) as PatchResult, attempts };
+}
+
+export function attemptFeedback(r: PatchResult, n: number): string {
+  return [
+    `Attempt ${n} was not accepted: ${r.status} — ${r.reason ?? ''}`,
+    `Re-scan: ${r.verification.rescan}${r.verification.newFindings.length ? `; new findings introduced: ${r.verification.newFindings.join(', ')}` : ''}`,
+    `Project tests: ${r.verification.tests}${r.verification.testOutput ? `\n${r.verification.testOutput.slice(-1500)}` : ''}`,
+    r.diff ? `Your previous diff:\n${r.diff.slice(0, 4000)}` : '',
+    'Propose a corrected patch for the original code (the previous attempt was not applied).',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function fixFinding(
+  deps: RemediationDeps,
+  findingId: string,
+  signal?: AbortSignal,
+  feedback?: string,
+): Promise<PatchResult> {
   const subject = await loadSubject(
     { repo: deps.scan.repo, artifacts: deps.scan.artifacts, source: deps.scan.source },
     findingId,
@@ -55,7 +102,7 @@ export async function fixFinding(deps: RemediationDeps, findingId: string, signa
   const patchId = newId('patch');
   const base = { patchId, findingId, scanId: subject.scan.scanId, createdAt };
   const notRun: PatchResult['verification'] = { rescan: 'NOT_RUN', newFindings: [], tests: 'not_available' };
-  const proposed = await deps.remediator.propose(subject, deps.scan.source, signal);
+  const proposed = await deps.remediator.propose(subject, deps.scan.source, signal, feedback);
   const runId = proposed.run.agentRunId;
   await deps.scan.repo.saveAgentRun(proposed.run);
   if (!proposed.proposal) {

@@ -7,6 +7,7 @@ import { exportCommand, sbomCommand } from './commands/export';
 import { findingsDisposeCommand, findingsListCommand, findingsShowCommand } from './commands/findings';
 import { fixCommand, verifyFixCommand } from './commands/fix';
 import { branchesCommand, gateCommand } from './commands/gate';
+import { inboxCommand } from './commands/inbox';
 import { infoCommand } from './commands/info';
 import { initCommand } from './commands/init';
 import {
@@ -21,6 +22,7 @@ import {
   kbSyncCommand,
 } from './commands/kb';
 import { baselineListCommand, baselineSetCommand, compareCommand } from './commands/lifecycle';
+import { caseListCommand, caseShowCommand, memoryCommand, reviewCommand } from './commands/review';
 import { scanCommand } from './commands/scan';
 import { createToken, serveCommand, serverInitCommand } from './commands/serve';
 import { temporalWorkerCommand } from './commands/temporal';
@@ -269,6 +271,10 @@ aiFlags(
 )
   .option('--apply', 'write a verified patch to the working tree (with --patch <id>, apply an earlier result)')
   .option('--patch <patchId>', 'patch id from an earlier `fix` run')
+  .option(
+    '--iterate [n]',
+    'retry with re-scan and test feedback until verified (default ai.remediation.max_iterations, max 5)',
+  )
   .action(run(fixCommand));
 stateOptions(
   program
@@ -277,6 +283,113 @@ stateOptions(
     .argument('<findingId>', 'finding id')
     .argument('[path]', 'scanned directory', '.'),
 ).action(run(verifyFixCommand));
+
+aiFlags(
+  stateOptions(
+    program
+      .command('review')
+      .description(
+        'scan, then run an autonomous, governed security review: triage every finding, assess dependency reachability, hunt for more (sends redacted code to the provider)',
+      )
+      .argument('[path]', 'directory to review', '.'),
+  ),
+)
+  .addOption(new Option('--mode <mode>', 'autonomy mode').choices(['observe', 'supervised', 'autonomous']))
+  .addOption(
+    new Option('--reviewer <mode>', 'reviewer model in autonomous attended runs').choices(['off', 'shadow', 'on']),
+  )
+  .option('--goal <text>', 'what the review should achieve (shown to every agent and the reviewer model)')
+  .option('--objectives <objective>', 'operator objective, verified before the case converges (repeatable)', collect)
+  .option('--budget-usd <usd>', 'case cost budget')
+  .option('--max-rounds <n>', 'maximum planning rounds')
+  .option('--l3', 'ask for sandboxed proofs of concept (they run without asking only if ai.validation.l3 is set)')
+  .option('--no-l3', 'never run proofs of concept')
+  .option('--fix', 'propose and verify fixes in a workspace copy (applying them always needs a human)')
+  .option('--unattended', 'no terminal prompts: asks wait in the inbox')
+  .option('--exclude <glob>', 'exclude paths (repeatable)', collect)
+  .option('--out <dir>', 'report directory')
+  .option('--fail-on <severity>', 'exit 1 when findings at or above this severity remain')
+  .option('--case <caseId>', 'continue a parked case (after answering its approvals)')
+  .action(run(reviewCommand));
+
+const inbox = program.command('inbox').description('approvals waiting for a human (local state or --server)');
+const inboxTarget = (command: ReturnType<typeof inbox.command>) =>
+  stateOptions(command)
+    .option('--server <url>', 'spinxsca server (token in SPINXSCA_TOKEN)')
+    .option('--project <projectId>', 'server project id');
+inboxTarget(
+  inbox.command('list').description('list pending approvals').argument('[path]', 'scanned directory', '.'),
+).action(run((path: string, options: never) => inboxCommand('list', undefined, path, options)));
+inboxTarget(
+  inbox
+    .command('show')
+    .description('show one approval')
+    .argument('<approvalId>')
+    .argument('[path]', 'scanned directory', '.'),
+).action(run((id: string, path: string, options: never) => inboxCommand('show', id, path, options)));
+inboxTarget(
+  inbox
+    .command('approve')
+    .description('approve (first answer wins)')
+    .argument('<approvalId>')
+    .argument('[path]', 'scanned directory', '.'),
+)
+  .addOption(
+    new Option(
+      '--grant <scope>',
+      'remember the approval (only when offered; human-only requests are always once)',
+    ).choices(['once', 'case', 'standing']),
+  )
+  .option('--reason <text>', 'why')
+  .action(run((id: string, path: string, options: never) => inboxCommand('approve', id, path, options)));
+inboxTarget(
+  inbox.command('deny').description('deny').argument('<approvalId>').argument('[path]', 'scanned directory', '.'),
+)
+  .option('--reason <text>', 'why')
+  .action(run((id: string, path: string, options: never) => inboxCommand('deny', id, path, options)));
+
+const caseCommand = program.command('case').description('inspect autonomous review cases');
+stateOptions(
+  caseCommand.command('list').description('list review cases').argument('[path]', 'scanned directory', '.'),
+).action(run(caseListCommand));
+stateOptions(
+  caseCommand
+    .command('show')
+    .description('show a case: objectives, findings, work, coverage')
+    .argument('<caseId>', 'case id')
+    .argument('[path]', 'scanned directory', '.'),
+)
+  .option('--journal', 'print the evidence journal')
+  .option('--audit', 'print the governance audit trail')
+  .option('--verify-chain', 'verify the journal and audit hash chains (exit 2 when broken)')
+  .action(run((caseId: string, path: string, options: never) => caseShowCommand(path, caseId, options)));
+
+const memory = program.command('memory').description('project memory used by review cases');
+stateOptions(memory.command('list').description('list memory entries').argument('[path]', 'scanned directory', '.'))
+  .option('--status <status>', 'active, proposed or invalidated')
+  .option('--kind <kind>', 'architecture, convention, lesson, disposition or verdict_cache')
+  .action(run((path: string, options: never) => memoryCommand('list', path, options)));
+stateOptions(
+  memory
+    .command('add')
+    .description('add a human-written memory entry (active)')
+    .argument('[path]', 'scanned directory', '.'),
+)
+  .requiredOption('--kind <kind>', 'architecture, convention, lesson or disposition')
+  .requiredOption('--key <key>', 'topic key')
+  .requiredOption('--text <text>', 'the fact')
+  .action(run((path: string, options: never) => memoryCommand('add', path, options)));
+for (const action of ['promote', 'forget'] as const) {
+  stateOptions(
+    memory
+      .command(action)
+      .description(action === 'promote' ? 'activate a proposed entry (human decision)' : 'invalidate an entry')
+      .argument('[path]', 'scanned directory', '.'),
+  )
+    .requiredOption('--id <memoryId>', 'memory id')
+    .option('--reason <text>', 'why')
+    .action(run((path: string, options: never) => memoryCommand(action, path, options)));
+}
 
 program
   .command('serve')
@@ -294,6 +407,10 @@ program
   )
   .option('--public-url <url>', 'external base URL, used in notification links')
   .option('--secure-cookies', 'mark the web session cookie Secure (behind HTTPS)')
+  .option(
+    '--desktop',
+    'sidecar of the desktop app: launch token in SPINXSCA_API_TOKEN, loopback only, ready line on stdout',
+  )
   .option('--no-worker', 'do not run scan jobs here (remote workers only); knowledge base refreshes still run')
   .option('--pool <name>', 'worker pools served in-process (repeatable; default: default)', collect)
   .addOption(

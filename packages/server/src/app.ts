@@ -6,9 +6,11 @@ import type { FindingOccurrence } from '@spinxsca/schemas';
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getCookie } from 'hono/cookie';
+import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { secureHeaders } from 'hono/secure-headers';
 import { z } from 'zod';
+import { mountCaseApi } from './cases-api';
 import { type Registry, ROLE_RANK, type Role, safeEqual, type TokenEntry } from './registry';
 import type { ProjectStates } from './state';
 import { mountUi, SESSION_COOKIE } from './ui';
@@ -27,6 +29,11 @@ export interface AppContext {
   secureCookies?: boolean;
   /** Remote worker protocol; omitted when only the in-process worker runs jobs. */
   workerApi?: WorkerApiContext;
+  /**
+   * Desktop sidecar mode (ADR-048): the per-launch token of the desktop app acts as the local owner
+   * (admin), only browser origins of the app may call, and the Host header must be loopback.
+   */
+  desktop?: { launchToken: string; origins: readonly string[] };
 }
 
 export type Env = { Variables: { actor: TokenEntry } };
@@ -104,6 +111,27 @@ export function createApp(ctx: AppContext): Hono<Env> {
         : limits.user;
     return limit(c, next);
   });
+  if (ctx.desktop) {
+    const desktop = ctx.desktop;
+    app.use('*', async (c, next) => {
+      // DNS rebinding: only loopback host names reach the sidecar.
+      const host = (c.req.header('host') ?? '').replace(/:\d+$/, '');
+      if (!['127.0.0.1', 'localhost', '[::1]'].includes(host)) return c.json({ error: 'forbidden host' }, 403);
+      const origin = c.req.header('origin');
+      if (origin && !desktop.origins.includes(origin)) return c.json({ error: 'forbidden origin' }, 403);
+      await next();
+      return undefined;
+    });
+    app.use(
+      '/v1/*',
+      cors({
+        origin: (origin) => (desktop.origins.includes(origin) ? origin : null),
+        allowHeaders: ['authorization', 'content-type', 'last-event-id'],
+        allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+        maxAge: 600,
+      }),
+    );
+  }
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
     if (err instanceof z.ZodError)
@@ -122,11 +150,22 @@ export function createApp(ctx: AppContext): Hono<Env> {
     // cross-site request cannot act with a signed-in user's cookie.
     const readOnly = c.req.method === 'GET' || c.req.method === 'HEAD';
     const session = readOnly ? getCookie(c, SESSION_COOKIE) : undefined;
-    const actor = bearer
-      ? registry.authenticate(bearer, clock.now())
-      : session
-        ? registry.sessionToken(session, clock.now())
+    const desktopOwner =
+      ctx.desktop && bearer && safeEqual(bearer, ctx.desktop.launchToken)
+        ? ({
+            tokenId: 'desktop',
+            name: 'desktop-owner',
+            role: 'admin',
+            createdAt: clock.now().toISOString(),
+          } as TokenEntry)
         : undefined;
+    const actor = desktopOwner
+      ? desktopOwner
+      : bearer
+        ? registry.authenticate(bearer, clock.now())
+        : session
+          ? registry.sessionToken(session, clock.now())
+          : undefined;
     if (!actor) throw new HTTPException(401, { message: 'authentication required' });
     c.set('actor', actor);
     await next();
@@ -406,6 +445,7 @@ export function createApp(ctx: AppContext): Hono<Env> {
   v1.get('/audit', role('admin'), (c) => c.json(registry.auditLog(Number(c.req.query('limit') ?? 200))));
 
   app.route('/v1', v1);
+  mountCaseApi(app, { registry, states, clock, authenticate, role, audit, projectOr404 });
   mountUi(app, ctx);
   app.get('/', (c) => c.redirect('/ui'));
   return app;

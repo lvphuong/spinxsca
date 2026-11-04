@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import type { Logger } from '@spinxsca/core';
 
 export interface NotificationEvent {
-  event: 'findings.new' | 'scan.failed';
+  event: 'findings.new' | 'scan.failed' | 'approval.requested' | 'case.completed';
   project: { projectId: string; name: string };
   branch: string;
   scanId?: string;
@@ -19,6 +19,12 @@ export interface NotificationEvent {
   }>;
   url?: string;
   error?: string;
+  /** Review cases (ADR-047): the case and, for approval.requested, what waits for a human. */
+  case?: {
+    caseId: string;
+    status: string;
+    pendingApprovals: Array<{ approvalId: string; title: string; humanOnly: boolean }>;
+  };
 }
 
 /**

@@ -70,7 +70,7 @@ describe('DockerSandboxRunner', () => {
   it('always applies the hardening flags', () => {
     const args = new DockerSandboxRunner().buildRunArgs({
       name: 'n',
-      image: 'img@sha256:abc',
+      image: `img@sha256:${'a'.repeat(64)}`,
       args: ['tool', '--version'],
       env: { B: '2', A: '1' },
       mounts: [{ hostPath: '/src', containerPath: '/src', readOnly: true }],
@@ -90,8 +90,31 @@ describe('DockerSandboxRunner', () => {
     }
     expect(joined).toContain('type=bind,source=/src,target=/src,readonly');
     expect(joined).toContain('--env A=1 --env B=2');
-    expect(args.slice(-3)).toEqual(['img@sha256:abc', 'tool', '--version']);
+    expect(args.slice(-3)).toEqual([`img@sha256:${'a'.repeat(64)}`, 'tool', '--version']);
     expect(joined).not.toMatch(/--user 0(:|\s)/);
+  });
+
+  it('refuses unpinned images and applies per-profile scratch space and runtime', () => {
+    const runner = new DockerSandboxRunner({ runtime: 'runsc' });
+    const spec = {
+      name: 'n',
+      image: 'node:22',
+      args: [],
+      env: {},
+      mounts: [],
+      workdir: '/',
+      profile: 'analysis' as const,
+      resources: { cpus: 1, memoryMb: 512, timeoutSec: 10 },
+    };
+    expect(() => runner.buildRunArgs(spec)).toThrow('unpinned image');
+    const local = runner.buildRunArgs({ ...spec, image: `sha256:${'b'.repeat(64)}` }).join(' ');
+    expect(local).toContain('--tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m');
+    expect(local).toContain('--memory-swap 512m');
+    expect(local).not.toContain('--runtime');
+    expect(runner.hardeningArgs('validation').join(' ')).toContain('--runtime runsc');
+    for (const profile of ['scan', 'analysis', 'validation', 'patch'] as const) {
+      expect(runner.hardeningArgs(profile).join(' ')).toContain('--network none');
+    }
   });
 
   const dockerAvailable = (() => {
@@ -110,4 +133,97 @@ describe('DockerSandboxRunner', () => {
     expect(failed).toEqual([]);
     expect(result.ok).toBe(true);
   });
+});
+
+describe('analysis copy and shell', () => {
+  const secret = 'Zx9-very-secret-value-123';
+  const files: Record<string, string> = {
+    'src/app.js': `const key = "${secret}";\nconst aws = "AKIAABCDEFGHIJKLMNOP";\nmodule.exports = key;\n`,
+    'src/config.js': 'const password = "hunter2hunter2";\n',
+    'secrets/prod.env': 'TOKEN=abc',
+    'README.md': 'hello',
+  };
+  const source = {
+    root: '/',
+    listFiles: async () => [],
+    readText: async (p: string) => files[p],
+    gitInfo: async () => undefined,
+  };
+
+  it('copies only allowed files with every known secret masked', async () => {
+    const { createSecretScrubber } = await import('@spinxsca/core');
+    const { materializeRedactedCopy } = await import('../src/index');
+    const { mkdtempSync, readFileSync, readdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dest = mkdtempSync(join(tmpdir(), 'spx-copy-'));
+    try {
+      const copy = await materializeRedactedCopy({
+        source,
+        paths: [...Object.keys(files), '../escape.txt'],
+        dest: join(dest, 'src'),
+        allows: (p) => !p.startsWith('secrets/'),
+        redactions: [{ path: 'src/app.js', startLine: 1, endLine: 1, startColumn: 14, endColumn: 14 + secret.length }],
+        scrubber: createSecretScrubber({ knownValues: [secret] }),
+      });
+      expect(copy.files).toBe(3);
+      expect(copy.skipped).toEqual(expect.arrayContaining(['secrets/prod.env', '../escape.txt']));
+      const all = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+          e.isDirectory() ? all(join(dir, e.name)) : [readFileSync(join(dir, e.name), 'utf8')],
+        );
+      const text = all(join(dest, 'src')).join('\n');
+      for (const leaked of [secret, 'AKIAABCDEFGHIJKLMNOP', 'hunter2hunter2', 'TOKEN=abc'])
+        expect(text).not.toContain(leaked);
+      expect(copy.redactedFiles.sort()).toEqual(['src/app.js', 'src/config.js']);
+    } finally {
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  const nodeImagePresent = (() => {
+    try {
+      execFileSync('docker', ['image', 'inspect', 'node:22-alpine'], { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  it.runIf(nodeImagePresent)(
+    'the analysis shell has no network and a read-only source',
+    async () => {
+      const { runAnalysisShell, materializeRedactedCopy } = await import('../src/index');
+      const { mkdtempSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dest = mkdtempSync(join(tmpdir(), 'spx-shell-'));
+      try {
+        await materializeRedactedCopy({ source, paths: ['src/app.js', 'README.md'], dest: join(dest, 'src') });
+        const sandbox = new DockerSandboxRunner();
+        const grep = await runAnalysisShell({
+          sandbox,
+          root: join(dest, 'src'),
+          command: 'grep -rn module.exports . && cat README.md',
+        });
+        expect(grep.exitCode).toBe(0);
+        expect(grep.stdout).toContain('src/app.js:3');
+        const net = await runAnalysisShell({
+          sandbox,
+          root: join(dest, 'src'),
+          command: 'wget -q -T 3 -O- http://1.1.1.1 || echo NO_NETWORK',
+        });
+        expect(net.stdout).toContain('NO_NETWORK');
+        const write = await runAnalysisShell({
+          sandbox,
+          root: join(dest, 'src'),
+          command: 'echo x > /src/README.md || echo READ_ONLY',
+        });
+        expect(write.stdout).toContain('READ_ONLY');
+      } finally {
+        rmSync(dest, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 });

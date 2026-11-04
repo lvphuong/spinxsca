@@ -14,7 +14,14 @@ export {
 } from './registry';
 export { RemoteWorker, type RemoteWorkerConfig, registerWorker, workerCapabilities } from './remote-worker';
 export { decode, encode } from './rpc';
-export { buildServer, type JobDispatcher, type RunningServer, type ServerOptions, startServer } from './server';
+export {
+  buildServer,
+  DESKTOP_ORIGINS,
+  type JobDispatcher,
+  type RunningServer,
+  type ServerOptions,
+  startServer,
+} from './server';
 export { ProjectStates } from './state';
 export { githubEvent, gitlabEvent, verifyGithubSignature } from './webhooks';
 export { type KbSyncFn, type ProjectInventory, Worker } from './worker';

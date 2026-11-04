@@ -1,5 +1,6 @@
 export * from './activity';
 export * from './branches';
+export * from './case/index';
 export * from './causes';
 export * from './coverage';
 export * from './diff';
@@ -12,6 +13,7 @@ export * from './policy';
 export * from './ports';
 export * from './reconcile';
 export * from './redact';
+export * from './review/index';
 export * from './snapshot';
 export * from './use-cases/compare';
 export * from './use-cases/explain';

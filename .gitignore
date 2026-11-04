@@ -12,3 +12,5 @@ coverage/
 evals/results/
 
 docs/
+apps/desktop/test-results/
+apps/desktop/playwright-report/

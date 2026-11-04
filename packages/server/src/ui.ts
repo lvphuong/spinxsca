@@ -33,7 +33,7 @@ nav.branches a{margin-right:8px}.kev{font-weight:700;color:var(--open)}`;
 function page(title: string, body: string, actor?: TokenEntry): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · spinxsca</title><style>${STYLE}</style></head><body>
-<header><a class="brand" href="/ui">spinxsca</a><a href="/ui">Projects</a><a href="/ui/jobs">Jobs</a>${
+<header><a class="brand" href="/ui">spinxsca</a><a href="/ui">Projects</a><a href="/ui/inbox">Inbox</a><a href="/ui/jobs">Jobs</a>${
     actor
       ? `<form method="post" action="/ui/logout"><span class="muted">${esc(actor.name)} · ${esc(actor.role)}</span> <button type="submit">Sign out</button></form>`
       : ''
@@ -222,6 +222,74 @@ ${ai?.summary ? `<h2>AI assessment</h2><div class="card"><p>${esc(ai.summary)}</
       page(
         'Jobs',
         `<h1>Jobs</h1><div class="card scroll"><table><tr><th>Job</th><th>Kind</th><th>Project</th><th>Branch</th><th>Status</th><th>Attempts</th><th>Updated</th><th>Result</th></tr>${rows || '<tr><td colspan="8" class="muted">No jobs.</td></tr>'}</table></div>`,
+        actor,
+      ),
+    );
+  });
+
+  app.get('/ui/inbox', async (c) => {
+    const actor = actorOf(c);
+    if (!actor) return c.redirect('/ui/login');
+    const rows: string[] = [];
+    for (const project of registry.projects()) {
+      if (!states.exists(project.projectId)) continue;
+      for (const a of await states.get(project.projectId).cases.listApprovals({ status: 'PENDING' })) {
+        rows.push(
+          `<tr><td>${esc(a.requestedAt)}</td><td>${esc(project.name)}</td><td><a href="${url`/ui/projects/${project.projectId}/cases/${a.caseId}`}">${esc(a.title)}</a>${a.humanOnly ? ' <span class="chip HIGH">human only</span>' : ''}</td><td>${esc(a.tool)}<br><span class="muted">${esc(a.risk)} · ${esc(a.effect)}</span></td><td><code>spinxsca inbox approve ${esc(a.approvalId)} --project ${esc(project.projectId)} --server &lt;url&gt;</code></td></tr>`,
+        );
+      }
+    }
+    return c.html(
+      page(
+        'Inbox',
+        `<h1>Inbox</h1><p class="muted">Actions the autonomous review is waiting for. Decisions need an API token (CLI, desktop app or <code>POST /v1/projects/:id/approvals/:approvalId</code>); the first answer wins.</p><div class="card scroll"><table><tr><th>Requested</th><th>Project</th><th>Action</th><th>Tool</th><th>Decide</th></tr>${rows.join('') || '<tr><td colspan="5" class="muted">Nothing is waiting.</td></tr>'}</table></div>`,
+        actor,
+      ),
+    );
+  });
+
+  app.get('/ui/projects/:id/cases/:caseId', async (c) => {
+    const actor = actorOf(c);
+    if (!actor) return c.redirect('/ui/login');
+    const project = registry.project(c.req.param('id'));
+    if (!project || !states.exists(project.projectId)) return c.notFound();
+    const cases = states.get(project.projectId).cases;
+    const rc = await cases.getCase(c.req.param('caseId'));
+    if (!rc) return c.notFound();
+    const verdicts = new Map((await cases.listVerdicts(rc.caseId)).map((v) => [v.handle, v]));
+    const handles = (await cases.listHandles(rc.caseId))
+      .map((h) => {
+        const v = verdicts.get(h.handle);
+        return `<tr><td>${esc(h.handle)}</td><td>${esc(h.title)}</td><td>${esc(h.path)}:${esc(h.startLine)}</td><td>${stateChip(v?.verdict ?? 'UNREVIEWED')}${v?.applicability ? ` <span class="muted">${esc(v.applicability.status)}${v.applicability.reachability ? `/${esc(v.applicability.reachability)}` : ''}</span>` : ''}</td><td>${stateChip(v?.severity ?? h.severity)}</td><td>${esc(v?.poc?.outcome === 'CONFIRMED' ? 'L3' : v ? 'L2' : '-')}</td></tr>`;
+      })
+      .join('');
+    const objectives = (await cases.listObjectives(rc.caseId))
+      .map(
+        (o) =>
+          `<li>${stateChip(o.status)} ${esc(o.title)}${o.reason ? ` <span class="muted">— ${esc(o.reason)}</span>` : ''}</li>`,
+      )
+      .join('');
+    const checks = (await cases.listChecks(rc.caseId))
+      .map(
+        (k) =>
+          `<li>${stateChip(k.outcome)} ${esc(k.checkId)}${k.reason ? ` <span class="muted">— ${esc(k.reason)}</span>` : ''}</li>`,
+      )
+      .join('');
+    const journal = (await cases.listJournal(rc.caseId))
+      .slice(-40)
+      .map(
+        (e) =>
+          `<tr><td>${esc(e.seq)}</td><td>${esc(e.kind)}</td><td>${esc(e.author)}</td><td>${esc(e.text.slice(0, 600))}</td></tr>`,
+      )
+      .join('');
+    const ledger = await cases.getLedger(rc.caseId);
+    return c.html(
+      page(
+        `Case ${rc.caseId}`,
+        `<h1>Review case ${esc(rc.caseId)}</h1><p class="muted">${stateChip(rc.status)} ${esc(rc.stopReason ?? '')} · mode ${esc(rc.mode)} · rounds ${esc(rc.round)} · $${esc(ledger.costUsd.toFixed(2))} · scan ${esc(rc.scanId)}</p>
+<div class="card"><h2>Goal</h2><p>${esc(rc.goal)}</p><h2>Objectives</h2><ul>${objectives}</ul><h2>Coverage</h2><ul>${checks || '<li class="muted">none recorded</li>'}</ul></div>
+<div class="card scroll"><h2>Findings</h2><table><tr><th>Handle</th><th>Title</th><th>Location</th><th>Verdict</th><th>Severity</th><th>Level</th></tr>${handles}</table></div>
+<div class="card scroll"><h2>Journal</h2><table><tr><th>#</th><th>Kind</th><th>Author</th><th>Text</th></tr>${journal}</table></div>`,
         actor,
       ),
     );

@@ -23,6 +23,8 @@ import {
 import Database from 'better-sqlite3';
 import { and, asc, desc, eq, inArray, isNull, max, ne } from 'drizzle-orm';
 import { type BetterSQLite3Database, drizzle } from 'drizzle-orm/better-sqlite3';
+import { sqliteDriver } from './case/driver';
+import { SqlCaseRepository } from './case/repository';
 import { migrate } from './migrate';
 import * as t from './schema';
 
@@ -46,6 +48,14 @@ export class SqliteScanRepository implements ScanRepository {
 
   close(): void {
     this.sqlite.close();
+  }
+
+  private caseRepo?: SqlCaseRepository;
+
+  /** Case store (ADR-044) on the same connection. */
+  cases(): SqlCaseRepository {
+    this.caseRepo ??= new SqlCaseRepository(sqliteDriver(this.sqlite));
+    return this.caseRepo;
   }
 
   async ensureProject(input: {

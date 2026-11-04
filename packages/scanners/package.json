@@ -13,5 +13,8 @@
     "@spinxsca/core": "workspace:*",
     "@spinxsca/schemas": "workspace:*",
     "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@spinxsca/sandbox": "workspace:*"
   }
 }

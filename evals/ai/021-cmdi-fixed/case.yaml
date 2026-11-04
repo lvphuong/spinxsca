@@ -1,0 +1,9 @@
+id: 021-cmdi-fixed
+title: Command injection through a shell command (fixed)
+pair: cmdi
+variant: fixed
+source: src
+l3: true
+expect:
+  findings: []
+  no_confirmed_poc: true

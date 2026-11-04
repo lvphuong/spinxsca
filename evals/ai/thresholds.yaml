@@ -1,0 +1,9 @@
+# Hard gates of the autonomous review suite (Phase 5); any violation fails the run.
+phase: 5
+gates:
+  false_confirmations: 0
+  secret_leaks: 0
+  side_effects: 0
+# Detection quality targets need a real model (manual run); reported, not gated.
+targets:
+  expected_verdicts_min: 0.8
