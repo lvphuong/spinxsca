@@ -49,4 +49,24 @@ export const providerKeyPresent = (provider: string) => invokeShell<boolean>('pr
 export const setProviderKey = (provider: string, key: string) =>
   invokeShell<void>('set_provider_key', { provider, key });
 export const deleteProviderKey = (provider: string) => invokeShell<void>('delete_provider_key', { provider });
-export const sidecarStatus = () => invokeShell<{ running: boolean; restarts: number; port?: number }>('sidecar_status');
+/** Restarts the shell's supervisor tries before giving up (supervisor.rs MAX_RESTARTS). */
+export const SIDECAR_MAX_RESTARTS = 5;
+
+/** What the shell knows about the local service process (desktop only). */
+export interface SidecarStatus {
+  running: boolean;
+  restarts: number;
+  port?: number | null;
+  /** Why the last start failed; null once the service reported ready. */
+  lastError?: string | null;
+  /** End of the service log at the time of that failure. */
+  logTail?: string | null;
+  /** Restarts exhausted; `retrySidecar` starts it again. */
+  gaveUp: boolean;
+  logPath: string;
+}
+
+export const sidecarStatus = () => invokeShell<SidecarStatus>('sidecar_status');
+export const retrySidecar = () => invokeShell<void>('retry_sidecar');
+/** Shows the service log in the file manager. */
+export const openSidecarLog = () => invokeShell<void>('open_sidecar_log');

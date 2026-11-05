@@ -208,7 +208,11 @@ select { padding-right: 28px; appearance: none; background-image: linear-gradien
   display: flex; align-items: center; gap: 8px;
   padding: 8px 32px; font-size: 12.5px; font-weight: 500;
   background: var(--danger-soft); color: var(--danger); border-bottom: 1px solid var(--danger-line);
+  flex-wrap: wrap;
 }
+.offline-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.offline-actions { display: flex; gap: 6px; flex: none; }
+.offline-bar .sidecar-log { flex-basis: 100%; margin-top: 2px; }
 .page { max-width: 1040px; margin: 0 auto; padding: 28px 32px 56px; }
 .page-wide { max-width: 1320px; }
 .loading { display: grid; place-items: center; padding: 64px 0; color: var(--muted); }
@@ -387,6 +391,9 @@ select { padding-right: 28px; appearance: none; background-image: linear-gradien
 .step-problem .step-status { color: var(--danger); }
 .step-skipped .step-status { color: var(--faint); font-weight: 400; }
 .step-actions { display: flex; gap: 8px; margin-top: 10px; }
+.sidecar-log { margin-top: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.sidecar-log summary { cursor: pointer; overflow-wrap: anywhere; }
+.sidecar-log .code-block { margin-top: 6px; max-height: 220px; overflow: auto; }
 .setup-footer {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 16px 28px; background: var(--surface-2); border-top: 1px solid var(--line);

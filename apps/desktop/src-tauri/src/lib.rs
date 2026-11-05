@@ -68,6 +68,24 @@ fn sidecar_status(state: tauri::State<'_, AppState>) -> SidecarState {
     state.supervisor.state.lock().unwrap().clone()
 }
 
+/// Starts the sidecar again after the supervisor gave up.
+#[tauri::command]
+fn retry_sidecar(state: tauri::State<'_, AppState>) {
+    state.supervisor.retry();
+}
+
+/// Shows the sidecar log in the file manager. The path is fixed by the shell, not the webview.
+#[tauri::command]
+fn open_sidecar_log(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let path = state.supervisor.state.lock().unwrap().log_path.clone();
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+/// A loopback port free right now, for a sidecar whose first start failed.
+fn free_port() -> Option<u16> {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()).ok()
+}
+
 /// Sidecar program: SPINXSCA_SIDECAR in development ("node /path/apps/cli/dist/index.mjs"), else the
 /// bundled Node runtime and CLI in the resources directory.
 fn sidecar_command(resources: &Path, data_dir: &Path, port: u16) -> (PathBuf, Vec<String>) {
@@ -131,7 +149,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![docker_status, provider_key_present, set_provider_key, delete_provider_key, sidecar_status])
+        .invoke_handler(tauri::generate_handler![
+            docker_status,
+            provider_key_present,
+            set_provider_key,
+            delete_provider_key,
+            sidecar_status,
+            retry_sidecar,
+            open_sidecar_log
+        ])
         .setup(move |app| {
             // Updates are signed with minisign; the plugin is enabled once a real public key is configured.
             let updater_ready = app
@@ -145,29 +171,32 @@ pub fn run() {
             if updater_ready {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             }
-            let data_dir = app.path().app_data_dir()?;
+            // Windows: Tauri returns verbatim paths (`\\?\C:\...`); Node cannot resolve an entry
+            // script given that way (EISDIR on lstat 'C:') and the sidecar dies before its
+            // handshake. Hand the sidecar plain paths.
+            let data_dir = dunce::simplified(&app.path().app_data_dir()?).to_path_buf();
             fs::create_dir_all(data_dir.join("server"))?;
             let config = data_dir.join("spinxsca.yaml");
             if !config.exists() {
                 fs::write(&config, DEFAULT_CONFIG)?;
             }
-            let resources = app.path().resource_dir()?;
+            let resources = dunce::simplified(&app.path().resource_dir()?).to_path_buf();
             let path = shell_env::login_path();
             let (program, args) = sidecar_command(&resources, &data_dir, 0);
             let supervisor = Supervisor::new(SidecarSpec { program, args, env: sidecar_env(&path, &token), log_path: data_dir.join("sidecar.log") });
             let port = match supervisor.start(Duration::from_secs(90)) {
-                Ok(port) => {
-                    // Restarts keep the same port: the webview's connection is frozen at load.
-                    let (program, args) = sidecar_command(&resources, &data_dir, port);
-                    let mut spec = SidecarSpec { program, args, env: sidecar_env(&path, &token), log_path: data_dir.join("sidecar.log") };
-                    std::mem::swap(&mut *supervisor_spec(&supervisor), &mut spec);
-                    port
-                }
+                Ok(port) => port,
                 Err(err) => {
+                    // The UI reads the error through sidecar_status. Restarts need a port the
+                    // webview knows, so reserve one now instead of leaving it at 0.
                     eprintln!("spinxsca sidecar: {err}");
-                    0
+                    free_port().unwrap_or(0)
                 }
             };
+            // Restarts keep the same port: the webview's connection is frozen at load.
+            let (program, args) = sidecar_command(&resources, &data_dir, port);
+            let mut spec = SidecarSpec { program, args, env: sidecar_env(&path, &token), log_path: data_dir.join("sidecar.log") };
+            std::mem::swap(&mut *supervisor_spec(&supervisor), &mut spec);
             supervisor.supervise(|_| {});
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Spinx SecureCode AI")

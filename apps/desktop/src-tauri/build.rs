@@ -7,6 +7,8 @@ fn main() {
             "set_provider_key",
             "delete_provider_key",
             "sidecar_status",
+            "retry_sidecar",
+            "open_sidecar_log",
         ]),
     ))
     .expect("failed to run tauri-build");

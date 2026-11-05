@@ -2,8 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiClient, type Connection } from './api/client';
 import type { ApprovalRecord, Project } from './api/types';
 import { Icon, type IconName } from './components/icons';
-import { ToastProvider } from './components/ui';
-import { type DockerStatus, dockerStatus, inDesktopShell, notify } from './lib/shell';
+import { SidecarLogTail } from './components/SidecarLog';
+import { Spinner, ToastProvider } from './components/ui';
+import {
+  type DockerStatus,
+  dockerStatus,
+  inDesktopShell,
+  notify,
+  openSidecarLog,
+  retrySidecar,
+  SIDECAR_MAX_RESTARTS,
+  type SidecarStatus,
+  sidecarStatus,
+} from './lib/shell';
 import { Inbox } from './views/Inbox';
 import { Onboarding } from './views/Onboarding';
 import { Projects } from './views/Projects';
@@ -33,6 +44,8 @@ export function App({ connection }: { connection: Connection }) {
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [service, setService] = useState<ServiceState>('checking');
   const [docker, setDocker] = useState<DockerStatus | undefined>();
+  // Why the service is not answering, as the shell saw it (desktop only).
+  const [sidecar, setSidecar] = useState<SidecarStatus | undefined>();
   const known = useRef(new Set<string>());
   const mainRef = useRef<HTMLElement>(null);
 
@@ -42,11 +55,13 @@ export function App({ connection }: { connection: Connection }) {
       setProjects(p);
       setApprovals(a);
       setService('online');
+      setSidecar(undefined);
       const fresh = a.filter((x) => !known.current.has(x.approvalId));
       for (const x of a) known.current.add(x.approvalId);
       if (fresh.length && known.current.size > fresh.length) void notify('Spinx: approval needed', fresh[0]?.title ?? '');
     } catch {
       setService('offline');
+      setSidecar(await sidecarStatus().catch(() => undefined));
     }
   }, [api]);
 
@@ -127,10 +142,13 @@ export function App({ connection }: { connection: Connection }) {
         </aside>
         <main className="main" ref={mainRef}>
           {service === 'offline' && (
-            <div className="offline-bar" role="alert">
-              <Icon name="alertCircle" size={15} />
-              The local service is not answering. It restarts on its own; reviews resume when it is back.
-            </div>
+            <OfflineBar
+              sidecar={sidecar}
+              onRetried={() => {
+                setSidecar((s) => (s ? { ...s, gaveUp: false } : s));
+                void refresh();
+              }}
+            />
           )}
           {route.view === 'inbox' && (
             <Inbox
@@ -165,6 +183,47 @@ export function App({ connection }: { connection: Connection }) {
         </main>
       </div>
     </ToastProvider>
+  );
+}
+
+/** The service is not answering: why, as far as the shell knows, and what can be done about it. */
+function OfflineBar({ sidecar, onRetried }: { sidecar: SidecarStatus | undefined; onRetried: () => void }) {
+  const [retrying, setRetrying] = useState(false);
+  const error = sidecar?.lastError;
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await retrySidecar();
+      onRetried();
+    } finally {
+      setRetrying(false);
+    }
+  };
+  return (
+    <div className="offline-bar" role="alert">
+      <Icon name="alertCircle" size={15} />
+      <span className="offline-text">
+        {!error
+          ? 'The local service is not answering. It restarts on its own; reviews resume when it is back.'
+          : sidecar.gaveUp
+            ? `The local service could not be restarted: ${error}. Gave up after ${SIDECAR_MAX_RESTARTS} restarts.`
+            : `The local service failed to start: ${error}. Restarting (${sidecar.restarts} of ${SIDECAR_MAX_RESTARTS})…`}
+      </span>
+      {error && (
+        <span className="offline-actions">
+          {sidecar.gaveUp && (
+            <button type="button" className="btn btn-sm" disabled={retrying} onClick={() => void retry()}>
+              {retrying ? <Spinner size={13} /> : <Icon name="refresh" size={14} />}
+              Try again
+            </button>
+          )}
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => void openSidecarLog()}>
+            Show log file
+          </button>
+        </span>
+      )}
+      <SidecarLogTail status={sidecar} />
+    </div>
   );
 }
 

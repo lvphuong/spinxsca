@@ -1,8 +1,21 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
 import { Icon } from '../components/icons';
+import { SidecarLogTail } from '../components/SidecarLog';
 import { Spinner } from '../components/ui';
-import { type DockerStatus, dockerStatus, inDesktopShell, openExternal, providerKeyPresent, setProviderKey } from '../lib/shell';
+import {
+  type DockerStatus,
+  dockerStatus,
+  inDesktopShell,
+  openExternal,
+  openSidecarLog,
+  providerKeyPresent,
+  retrySidecar,
+  type SidecarStatus,
+  setProviderKey,
+  SIDECAR_MAX_RESTARTS,
+  sidecarStatus,
+} from '../lib/shell';
 
 type StepState = 'checking' | 'ready' | 'problem' | 'skipped';
 
@@ -18,6 +31,9 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
   const [checkingDocker, setCheckingDocker] = useState(false);
   const [service, setService] = useState<{ state: 'checking' | 'online' | 'offline'; detail?: string }>({ state: 'checking' });
   const [serviceAttempt, setServiceAttempt] = useState(0);
+  // Why the service is not answering, as the shell saw it (desktop only).
+  const [sidecar, setSidecar] = useState<SidecarStatus | undefined>();
+  const [retrying, setRetrying] = useState(false);
   const [hasKey, setHasKey] = useState<boolean | undefined>();
   const [key, setKey] = useState('');
   const [saving, setSaving] = useState(false);
@@ -41,10 +57,15 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
     const tick = async () => {
       try {
         await api.health();
-        if (!stopped) setService({ state: 'online' });
+        if (stopped) return;
+        setService({ state: 'online' });
+        setSidecar(undefined);
       } catch (err) {
         if (stopped) return;
         setService({ state: 'offline', detail: (err as Error).message });
+        const status = await sidecarStatus().catch(() => undefined);
+        if (stopped) return;
+        setSidecar(status);
         timer = setTimeout(() => void tick(), 2000);
       }
     };
@@ -59,6 +80,16 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
   useEffect(() => {
     if (ready) onDone();
   }, [ready, onDone]);
+
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await retrySidecar();
+      setSidecar((s) => (s ? { ...s, gaveUp: false } : s));
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -93,7 +124,8 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
   }
 
   const dockerState: StepState = !native ? 'skipped' : checkingDocker ? 'checking' : docker.available ? 'ready' : 'problem';
-  const serviceState: StepState = service.state === 'online' ? 'ready' : 'checking';
+  const serviceError = service.state !== 'online' ? sidecar?.lastError : undefined;
+  const serviceState: StepState = service.state === 'online' ? 'ready' : serviceError ? 'problem' : 'checking';
   const keyState: StepState = !native ? 'skipped' : hasKey ? 'ready' : 'problem';
   const doneCount = [dockerState, serviceState, keyState].filter((s) => s === 'ready').length;
 
@@ -122,11 +154,32 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
             status={
               service.state === 'online'
                 ? 'Running'
-                : service.state === 'checking'
-                  ? 'Restarting with the new settings…'
-                  : 'Starting… this can take up to a minute on the first launch.'
+                : serviceError
+                  ? sidecar?.gaveUp
+                    ? `Could not start: ${serviceError}. Gave up after ${SIDECAR_MAX_RESTARTS} restarts.`
+                    : `Could not start: ${serviceError}. Restarting (${sidecar?.restarts ?? 0} of ${SIDECAR_MAX_RESTARTS})…`
+                  : service.state === 'checking'
+                    ? 'Restarting with the new settings…'
+                    : 'Starting… this can take up to a minute on the first launch.'
             }
-          />
+            action={
+              serviceError && (
+                <>
+                  {sidecar?.gaveUp && (
+                    <button type="button" className="btn btn-sm" disabled={retrying} onClick={() => void retry()}>
+                      {retrying ? <Spinner size={13} /> : <Icon name="refresh" size={14} />}
+                      Try again
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => void openSidecarLog()}>
+                    Show log file
+                  </button>
+                </>
+              )
+            }
+          >
+            {serviceError && <SidecarLogTail status={sidecar} />}
+          </Step>
           <Step
             state={dockerState}
             icon="box"
@@ -190,7 +243,9 @@ export function Onboarding({ api, onDone }: { api: ApiClient; onDone: () => void
 
         <footer className="setup-footer">
           <span className="muted">
-            {service.state !== 'online'
+            {serviceError
+              ? 'The local service did not start; its log says why. Continue needs it running.'
+              : service.state !== 'online'
               ? 'Continue becomes available when the local service answers.'
               : dockerState === 'problem'
                 ? 'You can continue, but reviews need Docker.'
