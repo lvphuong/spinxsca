@@ -1,0 +1,10 @@
+# Acceptance thresholds for `spinxsca eval --suite logic --ai standard` (ADR-049, docs/architecture/09).
+# Ground truth here is detectable only by the AI roles; below --ai standard it is pending.
+# `live_only` cases need a real model (`--ai-provider anthropic`): the scripted provider reports them as pending.
+phase: 6
+ai_level: standard
+precision_min: 0.85
+recall_min: 0.85
+identity_stability_min: 0.95
+sibling_sweep_min: 0.8
+invariant_coverage_min: 0.9

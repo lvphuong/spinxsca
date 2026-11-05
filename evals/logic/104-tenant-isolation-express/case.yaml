@@ -1,0 +1,24 @@
+id: 104-tenant-isolation-express
+title: Project lookup by id crosses tenants (Express, Prisma)
+description: >-
+  Lists and creates are scoped by req.user.tenantId; GET /projects/:id uses findUnique by id alone,
+  so a user of one tenant reads another tenant's project.
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: TENANT_ISOLATION
+    cwe: [CWE-639, CWE-284]
+    path: routes/projects.js
+    lines: [13, 17]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    family: projects
+negatives:
+  - path: routes/projects.js
+    lines: [7, 10]
+    reason: list filtered by tenantId
+  - path: routes/projects.js
+    lines: [19, 22]
+    reason: create sets tenantId from the session

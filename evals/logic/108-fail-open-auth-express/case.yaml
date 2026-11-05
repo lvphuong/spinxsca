@@ -1,0 +1,20 @@
+id: 108-fail-open-auth-express
+title: Authentication middleware fails open (Express)
+description: >-
+  requireAuth catches the verification error, logs it and calls next() without a user, so every route
+  behind it is reachable anonymously. live_only: the scripted provider does not read control bodies.
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: MISSING_AUTHENTICATION
+    cwe: [CWE-636, CWE-287]
+    path: middleware/auth.js
+    lines: [5, 13]
+    severity: CRITICAL
+    detectable_by: [ai]
+    min_phase: 6
+    live_only: true
+negatives:
+  - path: routes/account.js
+    reason: the route itself is fine once authentication is enforced

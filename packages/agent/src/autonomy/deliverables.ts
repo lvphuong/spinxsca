@@ -1,6 +1,17 @@
 import type { DependencyPort, SourceTree, ValidationPort } from '@spinxsca/core';
-import { AiFinding, Confidence, Severity, SourceRef, type WorkItemKind } from '@spinxsca/schemas';
+import {
+  AiFinding,
+  Confidence,
+  type GroundTruth,
+  InvariantResult,
+  ReconDeliverable,
+  Severity,
+  SourceRef,
+  VariantHuntRow,
+  type WorkItemKind,
+} from '@spinxsca/schemas';
 import { z } from 'zod';
+import { closedEndedProblems, validateGroundTruth } from '../ground-truth';
 import type { SubmitTool } from '../runtime/tools';
 import { checkCitations } from '../tools/code-tools';
 
@@ -35,6 +46,24 @@ export const TriageDeliverable = z.strictObject({
     })
     .optional(),
   missingEvidence: z.array(z.string().max(600)).max(8).default([]),
+  /** Downgrade-don't-delete (ADR-050): every link attacked, with the citation that broke it. */
+  refutationAttempts: z
+    .array(
+      z.strictObject({
+        link: z.enum(['reachability', 'input_control', 'sanitization', 'sink', 'authz', 'preconditions']),
+        result: z.enum(['held', 'broke']),
+        evidence: z.string().max(600).describe('path:line and what you read there'),
+      }),
+    )
+    .max(12)
+    .default([]),
+  /** Ground-truth carve-out the finding matches (an alternative to a cited contradiction). */
+  carveoutMatched: z
+    .string()
+    .regex(/^CO-\d+$/)
+    .optional(),
+  /** BLOCKED: the one question only a human who knows the deployment or business rules can answer. */
+  contextQuestion: z.string().max(400).optional(),
 });
 export type TriageDeliverable = z.infer<typeof TriageDeliverable>;
 
@@ -64,6 +93,9 @@ export const FindingsDeliverable = z.strictObject({
   findings: z.array(AiFinding).max(12),
   notes: z.string().max(3000),
   deferred: z.array(z.string().max(300)).max(10).describe('Checks you could not finish'),
+  /** Closed-ended coverage of the ground truth in the item (ADR-049). */
+  invariantResults: z.array(InvariantResult).max(60).default([]),
+  variantLog: z.array(VariantHuntRow).max(200).default([]),
 });
 export type FindingsDeliverable = z.infer<typeof FindingsDeliverable>;
 
@@ -101,6 +133,11 @@ export interface DeliverableContext {
   /** Package of a dependency handle (for the reachability cross-check). */
   packageOf?: (handle: string) => { ecosystem: string; name: string } | undefined;
   validation?: ValidationPort;
+  /** Ground truth of the case (ADR-049) and the slice this item is responsible for. */
+  groundTruth?: GroundTruth;
+  slice?: GroundTruth;
+  /** Agent-reported handle under triage: its claim contract decides which obligations must be addressed. */
+  claim?: { proofObligations: readonly string[] } | undefined;
 }
 
 /** Submit tool of a work item kind, with host-side checks returned to the model as problems. */
@@ -120,21 +157,50 @@ export function submitFor(kind: WorkItemKind, ctx: DeliverableContext): SubmitTo
         output: ApplicabilityDeliverable,
         validate: (o) => applicabilityProblems(o as ApplicabilityDeliverable, ctx),
       } as SubmitTool<unknown>;
+    case 'RECON':
+      return {
+        name: 'submit_recon',
+        description: 'Submit the threat model, packets and ground truth. Call exactly once.',
+        output: ReconDeliverable,
+        validate: async (o) => {
+          const d = o as ReconDeliverable;
+          return [
+            ...(await checkCitations(
+              ctx,
+              d.threatModel.packets.flatMap((p) =>
+                p.entryPoints.map((e) => ({ path: e.path, startLine: e.line, endLine: e.line })),
+              ),
+            )),
+            ...(await validateGroundTruth(d.groundTruth, ctx)),
+          ];
+        },
+      } as SubmitTool<unknown>;
     case 'THREAT_PACKET':
     case 'BASELINE_AUDIT':
     case 'HYPOTHESIS':
     case 'VARIANT_HUNT':
+    case 'LOGIC_AUDIT':
+    case 'COMPLETENESS_CRITIC':
     case 'SECRETS_SWEEP':
     case 'IAC_REVIEW':
       return {
         name: 'submit_findings',
-        description: 'Submit new findings (each needs a primary location and evidence) and what you could not finish.',
+        description:
+          'Submit new findings (each needs a primary location, evidence and a claim), one invariantResults row per invariant and one variantLog row per family member of your item, and what you could not finish.',
         output: FindingsDeliverable,
-        validate: (o) =>
-          checkCitations(
-            ctx,
-            (o as FindingsDeliverable).findings.flatMap((f) => f.locations),
-          ),
+        validate: async (o) => {
+          const d = o as FindingsDeliverable;
+          return [
+            ...(await checkCitations(
+              ctx,
+              d.findings.flatMap((f) => f.locations),
+            )),
+            ...d.findings
+              .filter((f) => f.locations.filter((l) => l.role === 'primary').length !== 1)
+              .map((f) => `finding "${f.title}" must have exactly one primary location`),
+            ...(ctx.slice ? closedEndedProblems(d, ctx.slice, { strict: kind === 'LOGIC_AUDIT' }) : []),
+          ];
+        },
       } as SubmitTool<unknown>;
     case 'EXPLOIT_POC':
       return {
@@ -158,6 +224,8 @@ export function submitFor(kind: WorkItemKind, ctx: DeliverableContext): SubmitTo
   }
 }
 
+const CITATION = /\S+\.[A-Za-z0-9]+:\d+/;
+
 export async function triageProblems(o: TriageDeliverable, ctx: DeliverableContext): Promise<string[]> {
   const problems = await checkCitations(ctx, o.evidence);
   if (o.verdict === 'TRUE_POSITIVE' && o.evidence.length === 0)
@@ -168,9 +236,36 @@ export async function triageProblems(o: TriageDeliverable, ctx: DeliverableConte
   if (o.verdict === 'FALSE_POSITIVE') {
     if (o.counterevidence.length === 0) problems.push('a FALSE_POSITIVE needs source-backed counterevidence');
     if (!o.noiseReason) problems.push('a FALSE_POSITIVE needs noiseReason: why the tool fired');
+    // Downgrade-don't-delete (ADR-050): refuting needs a cited contradiction or a matching carve-out.
+    const carveouts = new Set((ctx.groundTruth ?? ctx.slice)?.carveouts.map((c) => c.carveoutId) ?? []);
+    if (o.carveoutMatched && !carveouts.has(o.carveoutMatched))
+      problems.push(`${o.carveoutMatched} is not a carve-out of this case`);
+    const broke = o.refutationAttempts.filter((a) => a.result === 'broke');
+    const cited = broke.filter((a) => CITATION.test(a.evidence));
+    if (cited.length) {
+      const spans = cited.flatMap((a) => {
+        const m = /(\S+\.[A-Za-z0-9]+):(\d+)/.exec(a.evidence);
+        return m ? [{ path: m[1] as string, startLine: Number(m[2]), endLine: Number(m[2]) }] : [];
+      });
+      problems.push(...(await checkCitations(ctx, spans)).map((p) => `refutation ${p}`));
+    }
+    if (!cited.length && !(o.carveoutMatched && carveouts.has(o.carveoutMatched))) {
+      problems.push(
+        'a FALSE_POSITIVE needs a refutationAttempt that broke a link with a cited path:line, or carveoutMatched; if you only doubt it, return BLOCKED with the question',
+      );
+    }
+    if (o.counterevidence.some((c) => !CITATION.test(c)))
+      problems.push('every counterevidence entry must cite path:line');
   }
   if (o.verdict === 'BLOCKED' && o.missingEvidence.length === 0)
     problems.push('BLOCKED needs missingEvidence: what would decide it');
+  if (o.verdict === 'TRUE_POSITIVE' && o.confidence === 'HIGH' && ctx.claim?.proofObligations.length) {
+    const held = o.refutationAttempts.filter((a) => a.result === 'held').length;
+    if (held === 0)
+      problems.push(
+        `the reporter left ${ctx.claim.proofObligations.length} proof obligation(s) open; a HIGH-confidence TRUE_POSITIVE must record the links you checked in refutationAttempts (result held)`,
+      );
+  }
   return problems;
 }
 

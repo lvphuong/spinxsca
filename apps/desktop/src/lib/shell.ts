@@ -4,6 +4,9 @@
  */
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+/** True inside the desktop shell; false in a plain browser (development, tests). */
+export const inDesktopShell = inTauri;
+
 export async function invokeShell<T>(command: string, args: Record<string, unknown> = {}): Promise<T | undefined> {
   if (!inTauri()) return undefined;
   const { invoke } = await import('@tauri-apps/api/core');

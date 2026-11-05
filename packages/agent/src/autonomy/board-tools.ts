@@ -7,6 +7,7 @@ import { type AgentTool, defineTool } from '../runtime/tools';
 const PERSONA_FOR_KIND: Partial<Record<WorkItemKind, string>> = {
   HYPOTHESIS: 'appsec',
   VARIANT_HUNT: 'appsec',
+  LOGIC_AUDIT: 'logic',
   EXPLOIT_POC: 'exploit',
   FIX: 'fixer',
 };
@@ -77,7 +78,7 @@ export function createBoardTools(o: BoardToolOptions): AgentTool<never>[] {
       name: 'board_create_item',
       description: `Add optional work: ${o.creatable.join(', ')}. Be specific: one hypothesis, one variant pattern, one PoC or one fix per item.`,
       input: z.strictObject({
-        kind: z.enum(['HYPOTHESIS', 'VARIANT_HUNT', 'EXPLOIT_POC', 'FIX']),
+        kind: z.enum(['HYPOTHESIS', 'VARIANT_HUNT', 'LOGIC_AUDIT', 'EXPLOIT_POC', 'FIX']),
         title: z.string().min(5).max(160),
         description: z.string().min(10).max(3000),
         handles: z

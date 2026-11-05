@@ -14,6 +14,7 @@ export {
 export { FixReviewDeliverable, type RemediationOutcome, type RemediationTarget } from './autonomy/remediation';
 export { caseReport } from './autonomy/report';
 export { applicabilityVerdict, triageVerdict } from './autonomy/verdicts';
+export * from './ground-truth';
 export {
   AnthropicProvider,
   type AnthropicProviderOptions,
@@ -35,6 +36,7 @@ export {
   scriptedInvestigationProvider,
   scriptedRemediationProvider,
 } from './llm/scripted-explain';
+export { ScriptedLogicProvider, scriptedLogicProvider } from './llm/scripted-logic';
 export { ScriptedReviewProvider, scriptedReviewProvider } from './llm/scripted-review';
 export * from './llm/types';
 export { loadPersonas, type Persona, parseFrontMatter } from './personas/loader';
@@ -43,7 +45,7 @@ export { compileDataPolicy, type DataPolicy, DataPolicyError, globToRegExp, with
 export { loadPromptBundle, type PromptBundle } from './prompts/bundle';
 export { AgentAssistant } from './roles/assistant';
 export { AgentExplainer, type AgentExplainerOptions, EXPLAIN_POLICY_VERSION, explainPrompt } from './roles/explainer';
-export { AgentInvestigator, type AgentInvestigatorOptions } from './roles/investigator';
+export { AgentInvestigator, type AgentInvestigatorOptions, type ReconOptions } from './roles/investigator';
 export { AgentRemediator } from './roles/remediator';
 export * from './runtime/budget';
 export * from './runtime/compaction';
@@ -56,6 +58,7 @@ export * from './runtime/tools';
 export * from './runtime/transcript';
 export { loadSkills, type Skill, type SkillBundle, SkillMeta } from './skills/bundle';
 export { createSkillTool } from './skills/tools';
+export { createCensusTools } from './tools/census-tools';
 export { checkCitations, createCodeTools } from './tools/code-tools';
 export { createExploreTool, type ExploreToolOptions } from './tools/explore-tool';
 export { createGraphTools } from './tools/graph-tools';

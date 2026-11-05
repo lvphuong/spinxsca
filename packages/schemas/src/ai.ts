@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Confidence, Severity, Timestamp } from './common';
+import { Confidence, Severity, SourceSpan, Timestamp } from './common';
 import { Category, CweId } from './taxonomy';
 
 /**
@@ -96,6 +96,10 @@ export const AgentRunRecord = z.object({
     'dedupe',
     'explore',
     'reviewer',
+    // Phase 6 (ADR-049): recon extracts ground truth, logic audits walk it, critics re-check coverage.
+    'recon',
+    'logic',
+    'critic',
   ]),
   scanId: z.string().optional(),
   caseId: z.string().optional(),
@@ -170,6 +174,162 @@ export const ThreatModel = z.strictObject({
 });
 export type ThreatModel = z.infer<typeof ThreatModel>;
 
+// ---------------------------------------------------------------------------------------------
+// Ground truth (ADR-049, ported from Argo's recon stage): what the code is supposed to guarantee,
+// extracted before any hunting so audits verify a closed checklist instead of searching open-ended.
+// ---------------------------------------------------------------------------------------------
+
+const invariantId = z.string().regex(/^INV-\d{1,3}$/);
+const baselineId = z.string().regex(/^BL-\d{1,3}$/);
+const familyId = z.string().regex(/^FAM-\d{1,3}$/);
+const carveoutId = z.string().regex(/^CO-\d{1,3}$/);
+const unknownId = z.string().regex(/^RQ-\d{1,3}$/);
+
+/** A named security property that MUST hold at a location: the audit's PASS/FAIL checklist row. */
+export const GroundTruthInvariant = z.strictObject({
+  invariantId,
+  location: SourceSpan,
+  expected: z.string().min(1).max(400).describe("The property that must hold, in the project's own terms"),
+  howToCheck: z.string().min(1).max(400).describe('What to read to decide PASS or FAIL'),
+  /** Packets (standard level) or work-item slugs (deep level) that own this check. */
+  packets: z.array(z.string().max(60)).max(8).default([]),
+  familyId: familyId.optional(),
+});
+export type GroundTruthInvariant = z.infer<typeof GroundTruthInvariant>;
+
+/** The one place a systemic pattern is done right; every sibling is diffed against it. */
+export const BaselineReference = z.strictObject({
+  baselineId,
+  pattern: z.string().min(1).max(200),
+  location: SourceSpan,
+  whyCorrect: z.string().min(1).max(400),
+});
+export type BaselineReference = z.infer<typeof BaselineReference>;
+
+/** A repeated shape (controller-per-operation, converter-per-type) with its enumerated members. */
+export const VariantFamily = z.strictObject({
+  familyId,
+  rootCause: z.string().min(1).max(300),
+  baselineId: baselineId.optional(),
+  members: z
+    .array(
+      z.strictObject({ path: z.string().min(1), startLine: z.number().int().positive(), label: z.string().max(120) }),
+    )
+    .min(2)
+    .max(40),
+});
+export type VariantFamily = z.infer<typeof VariantFamily>;
+
+/** A pattern that looks like a bug but is intended or safe here; also handed to the validator. */
+export const Carveout = z.strictObject({
+  carveoutId,
+  pattern: z.string().min(1).max(300),
+  justification: z.string().min(1).max(500),
+  evidence: z.array(SourceSpan).max(4).default([]),
+  source: z.enum(['recon', 'operator']).default('recon'),
+});
+export type Carveout = z.infer<typeof Carveout>;
+
+/** A question the source cannot settle (deployment, roles, tenancy, business policy). */
+export const ResidualUnknown = z.strictObject({
+  unknownId,
+  question: z.string().min(1).max(400),
+  whySourceCannotSettle: z.string().min(1).max(400),
+  kind: z.enum(['architecture', 'deployment', 'role', 'tenant', 'business', 'policy']),
+  /** Invariant or family ids whose verdict depends on the answer. */
+  affects: z.array(z.string().max(40)).max(10).default([]),
+});
+export type ResidualUnknown = z.infer<typeof ResidualUnknown>;
+
+/** An operator- or recon-stated fact about trust; `claimed` facts must be rechecked, never cited as proof. */
+export const TrustClaim = z.strictObject({
+  statement: z.string().min(1).max(400),
+  provenance: z.string().min(1).max(200),
+  confidence: z.enum(['claimed', 'verified']).default('claimed'),
+});
+export type TrustClaim = z.infer<typeof TrustClaim>;
+
+export const Archetype = z.enum([
+  'web_app',
+  'http_api',
+  'cms',
+  'plugin',
+  'library',
+  'cli',
+  'agent_llm',
+  'mobile',
+  'data_pipeline',
+  'iac',
+  'hybrid',
+]);
+export type Archetype = z.infer<typeof Archetype>;
+
+export const GroundTruth = z.strictObject({
+  archetype: Archetype,
+  archetypeNote: z.string().max(400).default(''),
+  trustClaims: z.array(TrustClaim).max(30).default([]),
+  invariants: z.array(GroundTruthInvariant).max(40).default([]),
+  baselines: z.array(BaselineReference).max(20).default([]),
+  families: z.array(VariantFamily).max(12).default([]),
+  carveouts: z.array(Carveout).max(20).default([]),
+  residualUnknowns: z.array(ResidualUnknown).max(12).default([]),
+  notes: z.array(z.string().max(300)).max(10).default([]),
+});
+export type GroundTruth = z.infer<typeof GroundTruth>;
+
+/** Deliverable of the recon role: threat model and ground truth in one pass (`submit_recon`). */
+export const ReconDeliverable = z.strictObject({
+  threatModel: ThreatModel,
+  groundTruth: GroundTruth,
+});
+export type ReconDeliverable = z.infer<typeof ReconDeliverable>;
+
+/** One row of the audit's invariant checklist. */
+export const InvariantResult = z.strictObject({
+  invariantId,
+  result: z.enum(['PASS', 'FAIL', 'UNKNOWN']),
+  evidence: z.array(SourceSpan).max(4).default([]),
+  note: z.string().max(400).default(''),
+});
+export type InvariantResult = z.infer<typeof InvariantResult>;
+
+/** One row of the variant hunt log: every family member gets a verdict, not only the first. */
+export const VariantHuntRow = z.strictObject({
+  familyId,
+  member: z.strictObject({ path: z.string().min(1), startLine: z.number().int().positive() }),
+  verdict: z.enum(['SAFE', 'UNSURE', 'VULNERABLE']),
+  evidence: SourceSpan.optional(),
+  note: z.string().max(300).default(''),
+});
+export type VariantHuntRow = z.infer<typeof VariantHuntRow>;
+
+/**
+ * Claim contract (ADR-050): the exact, falsifiable statement a finding makes, separated from how
+ * bad it is (severity) and how sure the author is (confidence).
+ */
+export const FindingClaim = z.strictObject({
+  claim: z.string().min(1).max(300).describe('One falsifiable sentence: the security property that is broken'),
+  preconditions: z.array(z.string().max(300)).max(8).default([]),
+  capabilitiesGained: z.array(z.string().max(300)).max(8).default([]),
+  proofObligations: z
+    .array(z.string().max(300))
+    .max(8)
+    .default([])
+    .describe('Links still unproven from source; empty only when the code settles every link'),
+  threatModelClass: z
+    .enum(['real_bug', 'broken_mechanism', 'by_design'])
+    .default('real_bug')
+    .describe(
+      'real_bug: holds regardless of trust model; broken_mechanism: defeats a control the project ships; by_design: intended within the stated trust model (goes to notes, not findings)',
+    ),
+  baselineReference: baselineId.optional().describe('Baseline-correct reference this code deviates from'),
+  invariantId: invariantId.optional(),
+  familyId: familyId.optional(),
+  /** Hook for blind second-opinion passes (not run yet). */
+  sourcePass: z.string().max(40).optional(),
+});
+export type FindingClaim = z.infer<typeof FindingClaim>;
+
 /** One finding reported by an investigator or the baseline auditor; the host assigns ids and fingerprints. */
 export const AiFinding = z.strictObject({
   category: Category,
@@ -180,6 +340,7 @@ export const AiFinding = z.strictObject({
   severity: Severity,
   attacker: z.string().max(200),
   invariantViolated: z.string().max(300).describe('The security property that does not hold'),
+  ...FindingClaim.shape,
   locations: z
     .array(
       z.strictObject({
@@ -203,6 +364,9 @@ export const InvestigationResult = z.strictObject({
   resolvedQuestions: z.array(z.strictObject({ question: z.string().max(300), answer: z.string().max(600) })).max(12),
   reviewedFiles: z.array(z.string()).max(60),
   deferred: z.array(z.string().max(300)).max(10).describe('Checks not finished within budget'),
+  /** Closed-ended coverage (ADR-049): one row per invariant of the slice, one per family member. */
+  invariantResults: z.array(InvariantResult).max(60).default([]),
+  variantLog: z.array(VariantHuntRow).max(200).default([]),
 });
 export type InvestigationResult = z.infer<typeof InvestigationResult>;
 

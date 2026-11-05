@@ -110,6 +110,7 @@
                 "sast",
                 "sca",
                 "secrets",
+                "iac",
                 "ai"
               ]
             }
@@ -120,8 +121,18 @@
             "minimum": 0,
             "maximum": 9007199254740991
           },
+          "vulnerability_id": {
+            "type": "string"
+          },
           "notes": {
             "type": "string"
+          },
+          "family": {
+            "type": "string"
+          },
+          "live_only": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -134,6 +145,13 @@
         ],
         "additionalProperties": false
       }
+    },
+    "ai_context": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
     },
     "negatives": {
       "default": [],

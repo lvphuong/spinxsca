@@ -489,3 +489,244 @@ describe('case remediation (scripted)', () => {
     expect(await cases.listApprovals({ caseId })).toEqual([]);
   });
 });
+
+describe('recon-first review case (ADR-049, ADR-050, scripted)', () => {
+  const logicFiles: Record<string, string> = {
+    'orders/orders.controller.ts': [
+      "import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';",
+      '@Controller("orders")',
+      '@UseGuards(JwtAuthGuard)',
+      'export class OrdersController {',
+      '  constructor(private readonly orders: OrdersService) {}',
+      "  @Get(':id')",
+      "  async findOne(@Param('id') id: string) {",
+      '    return this.orders.findById(id);',
+      '  }',
+      '  @Get()',
+      '  async mine(@Req() req: AuthenticatedRequest) {',
+      '    return this.orders.findByOwner(req.user.id);',
+      '  }',
+      '}',
+    ].join('\n'),
+    'orders/orders.service.ts': [
+      'export class OrdersService {',
+      '  constructor(private readonly prisma: PrismaService) {}',
+      '  findById(id: string) {',
+      '    return this.prisma.order.findUnique({ where: { id } });',
+      '  }',
+      '  findByOwner(ownerId: string) {',
+      '    return this.prisma.order.findMany({ where: { ownerId } });',
+      '  }',
+      '}',
+    ].join('\n'),
+  };
+  const C = 'orders/orders.controller.ts::OrdersController';
+  const S = 'orders/orders.service.ts::OrdersService';
+  const sym = (key: string, path: string, name: string, start: number, end: number, owner: string) => ({
+    key,
+    path,
+    name,
+    qualifiedName: name,
+    kind: 'method' as const,
+    startLine: start,
+    endLine: end,
+    exported: true,
+    owner,
+  });
+  const symbols: Record<string, ReturnType<typeof sym>> = {
+    [`${C}.findOne`]: sym(`${C}.findOne`, 'orders/orders.controller.ts', 'findOne', 7, 9, C),
+    [`${C}.mine`]: sym(`${C}.mine`, 'orders/orders.controller.ts', 'mine', 11, 13, C),
+    [`${S}.findById`]: sym(`${S}.findById`, 'orders/orders.service.ts', 'findById', 3, 5, S),
+    [`${S}.findByOwner`]: sym(`${S}.findByOwner`, 'orders/orders.service.ts', 'findByOwner', 6, 8, S),
+  };
+  const endpoints = [
+    {
+      id: 'GET /orders/:id',
+      path: 'orders/orders.controller.ts',
+      line: 6,
+      method: 'GET',
+      route: '/orders/:id',
+      framework: 'nestjs',
+      handlers: [`${C}.findOne`],
+      controls: [],
+    },
+    {
+      id: 'GET /orders',
+      path: 'orders/orders.controller.ts',
+      line: 10,
+      method: 'GET',
+      route: '/orders',
+      framework: 'nestjs',
+      handlers: [`${C}.mine`],
+      controls: [],
+    },
+  ];
+  const guard = {
+    ref: 'JwtAuthGuard',
+    name: 'JwtAuthGuard',
+    kind: 'AUTHENTICATION',
+    source: 'decorator',
+    path: 'orders/orders.controller.ts',
+    line: 3,
+  };
+  const graph: import('@spinxsca/core').CodeGraphView = {
+    symbolCount: 4,
+    getSymbol: (key) => symbols[key],
+    symbolAt: () => undefined,
+    search: () => [],
+    callers: () => [],
+    callees: (key) => {
+      const to = key === `${C}.findOne` ? `${S}.findById` : key === `${C}.mine` ? `${S}.findByOwner` : undefined;
+      return to ? [{ from: key, to, path: 'orders/orders.controller.ts', line: 8, confidence: 'HIGH' }] : [];
+    },
+    endpoints: () => endpoints,
+    authContext: (id) => {
+      const e = endpoints.find((x) => x.id === id);
+      if (!e) return undefined;
+      const handler = symbols[e.handlers[0] ?? ''];
+      return {
+        endpoint: e,
+        handlers: handler ? [handler] : [],
+        controls: [guard],
+        hasAuthentication: true,
+        hasAuthorization: false,
+      };
+    },
+    callSitesIn: (path) =>
+      path === 'orders/orders.service.ts'
+        ? [
+            { line: 4, callerKey: `${S}.findById`, callee: 'this.prisma.order.findUnique', name: 'findUnique' },
+            { line: 7, callerKey: `${S}.findByOwner`, callee: 'this.prisma.order.findMany', name: 'findMany' },
+          ]
+        : [],
+    filePaths: () => Object.keys(logicFiles),
+  };
+  const logicSource: SourceTree = {
+    root: '/repo',
+    listFiles: async () => [],
+    readText: async (p) => logicFiles[p],
+    gitInfo: async () => undefined,
+  };
+
+  function setupLogic(scannerDrafts: CandidateDraft[] = []) {
+    const db = new Database(':memory:');
+    migrate(db);
+    const cases = new SqlCaseRepository(sqliteDriver(db));
+    const provider = new ScriptedReviewProvider();
+    const reviewer = new AgentAutonomousReviewer({
+      provider: () => provider,
+      promptsDir: join(ROOT, 'prompts'),
+      playbooksDir: join(ROOT, 'playbooks'),
+      config: {
+        ...config,
+        recon: { enabled: true, criticPasses: 1, maxLogicItems: 8, census: true },
+        context: {
+          accepted_risks: ['Admins may list every order.'],
+          roles: [],
+          trust_claims: [],
+          business_invariants: [],
+        },
+      },
+      goal: 'Find authorization and logic flaws.',
+    });
+    const scan = { scanId: 'scan_02logic', projectId: 'prj_1', snapshotId: 'snap_2' } as ScanRun;
+    const subject: ReviewSubject = {
+      scan,
+      snapshotPaths: Object.keys(logicFiles),
+      graph,
+      scannerDrafts,
+      redactions: [],
+      scrubber: createSecretScrubber(),
+      ports: {
+        cases,
+        history: { scan: async () => ({ outcome: 'RAN', secrets: [] }) },
+        images: { toolbox: `sha256:${'a'.repeat(64)}`, scanners: {} },
+        workDir: '/tmp/spx-case',
+      },
+    };
+    return { cases, provider, run: () => reviewer.review(subject, logicSource, { maxCostUsd: 5 }) };
+  }
+
+  it('seeds recon and logic audits, validates the agent finding with a claim contract and converges', async () => {
+    const { cases, provider, run } = setupLogic();
+    const outcome = await run();
+    expect(outcome.status).toBe('CONVERGED');
+    const items = await cases.listWorkItems(outcome.caseId);
+    const kinds = items.map((i) => i.kind);
+    expect(kinds).toEqual(
+      expect.arrayContaining(['RECON', 'LOGIC_AUDIT', 'COMPLETENESS_CRITIC', 'THREAT_PACKET', 'TRIAGE_FINDING']),
+    );
+    const recon = items.find((i) => i.kind === 'RECON');
+    expect(recon?.status).toBe('done');
+    const reconResult = recon?.result as { groundTruth: import('@spinxsca/schemas').GroundTruth } | undefined;
+    expect(reconResult?.groundTruth.invariants).toHaveLength(1);
+    expect(items.find((i) => i.kind === 'THREAT_PACKET')?.dependsOn).toEqual([`${outcome.caseId}:recon`]);
+    const logic = items.find((i) => i.kind === 'LOGIC_AUDIT');
+    expect(logic?.persona).toBe('logic');
+    expect(logic?.status).toBe('done');
+    const critics = items.filter((i) => i.kind === 'COMPLETENESS_CRITIC');
+    expect(critics.length).toBeGreaterThanOrEqual(1);
+    expect(critics.every((c) => c.status === 'done' && c.itemId.endsWith('-critic-1'))).toBe(true);
+    // The agent finding became a handle with its claim contract and an independent validator confirmed it.
+    const handles = await cases.listHandles(outcome.caseId);
+    const agent = handles.find((h) => h.origin === 'agent');
+    expect(agent?.category).toBe('BROKEN_OBJECT_LEVEL_AUTHORIZATION');
+    expect((agent?.draft as CandidateDraft | undefined)?.claim?.claim).toContain('authenticated user');
+    const verdict = outcome.verdicts.find((v) => v.verdict.handle === agent?.handle)?.verdict;
+    expect(verdict?.verdict).toBe('TRUE_POSITIVE');
+    expect(outcome.drafts.map((d) => d.scanner)).toEqual(['ai-review']);
+    const prompts = provider.requests.map((r) => JSON.stringify(r.messages[0]));
+    const triagePrompt = prompts.find((p) => p.includes('Reported by: logic'));
+    expect(triagePrompt).toContain('<claim_contract');
+    expect(triagePrompt).toContain('CO-900');
+    const logicPrompt = prompts.find((p) => p.includes('Work item: LOGIC_AUDIT'));
+    expect(logicPrompt).toContain('<ground_truth');
+    expect(logicPrompt).toContain('INV-1');
+    const criticPrompt = prompts.find((p) => p.includes('Work item: COMPLETENESS_CRITIC'));
+    expect(criticPrompt).toContain('Already reported');
+    const validatorSystem = provider.requests.find((r) =>
+      JSON.stringify(r.messages[0]).includes('Reported by: logic'),
+    )?.system;
+    expect(validatorSystem).toContain('Admins may list every order.');
+    expect(validatorSystem).toContain("Downgrade, don't delete");
+    const objectives = await cases.listObjectives(outcome.caseId);
+    expect(objectives.map((o) => `${o.kind}:${o.status}`)).toEqual(
+      expect.arrayContaining(['INVARIANTS_CHECKED:MET', 'FAMILIES_SWEPT:MET', 'MANDATORY_DONE:MET']),
+    );
+    const report = caseReport({
+      rc: (await cases.getCase(outcome.caseId))!,
+      objectives,
+      items,
+      handles,
+      verdicts: await cases.listVerdicts(outcome.caseId),
+      checks: await cases.listChecks(outcome.caseId),
+      ledger: await cases.getLedger(outcome.caseId),
+      pendingApprovals: 0,
+      ...(reconResult ? { groundTruth: reconResult.groundTruth } : {}),
+    });
+    expect(report).toContain('## Ground truth');
+    expect(report).toContain('1 invariants');
+  });
+
+  it('rejects a refutation without a cited contradiction and keeps the finding as BLOCKED', async () => {
+    const { cases, provider, run } = setupLogic([
+      {
+        ...(drafts[0] as CandidateDraft),
+        title: 'SQL query built from request data scripted:expect-false-positive',
+        locations: [{ path: 'orders/orders.service.ts', startLine: 4, endLine: 4, role: 'primary' }],
+      },
+    ]);
+    const outcome = await run();
+    const verdict = outcome.verdicts.find((v) => v.verdict.handle === 'CF-1')?.verdict;
+    expect(verdict?.verdict).toBe('BLOCKED');
+    const triage = provider.requests.filter(
+      (r) => r.tools.some((t) => t.name === 'submit_triage') && JSON.stringify(r.messages[0]).includes('CF-1'),
+    );
+    const rejection = triage
+      .flatMap((r) => r.messages.flatMap((m) => m.content))
+      .find((b) => b.type === 'tool_result' && b.isError);
+    expect(rejection && 'content' in rejection ? rejection.content : '').toContain('cited path:line');
+    const journal = await cases.listJournal(outcome.caseId);
+    expect(journal.some((e) => e.kind === 'VERDICT' && e.text.startsWith('BLOCKED'))).toBe(true);
+  });
+});

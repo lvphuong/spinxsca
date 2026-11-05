@@ -58,7 +58,8 @@ async function mockApi(page: Page) {
     if (auth !== `Bearer ${TOKEN}`) return route.fulfill({ status: 401, json: { error: 'authentication required' } });
     const url = new URL(req.url());
     if (url.pathname === '/v1/health') return route.fulfill({ json: { status: 'ok' } });
-    if (url.pathname === '/v1/projects') return route.fulfill({ json: { projects: [project] } });
+    // The real server answers with a bare array.
+    if (url.pathname === '/v1/projects') return route.fulfill({ json: [project] });
     if (url.pathname === '/v1/inbox')
       return route.fulfill({
         json: { approvals: approvals.filter((a) => !decisions.some((d) => d.url.endsWith(a.approvalId))) },
@@ -67,6 +68,7 @@ async function mockApi(page: Page) {
       decisions.push({ url: url.pathname, body: req.postDataJSON(), auth });
       return route.fulfill({ json: { approval: { status: 'APPROVED' } } });
     }
+    if (url.pathname.endsWith('/jobs')) return route.fulfill({ json: [] });
     if (url.pathname.endsWith('/cases')) {
       return route.fulfill({
         json: {
@@ -175,12 +177,27 @@ test('case view: timeline from the event stream, objectives, coverage and saniti
   await mockApi(page);
   await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
   await page.getByRole('button', { name: 'Continue' }).click();
-  await page.getByRole('button', { name: 'shop-api' }).click();
-  await page.getByRole('button', { name: 'case_1' }).click();
-  await expect(page.getByText('Every finding has a verdict')).toBeVisible();
-  await expect(page.getByText('shallow clone')).toBeVisible();
-  await expect(page.getByText('File path built from request data')).toBeVisible();
-  await expect(page.locator('.timeline li')).toHaveCount(2);
+  await page.getByRole('button', { name: /shop-api/ }).click();
+  // The newest review opens on its own.
+  await expect(page.getByRole('button', { name: /case_1/ })).toHaveAttribute('aria-current', 'true');
+  await expect(page.getByText('Waiting for your decision')).toBeVisible();
+  await page.getByRole('button', { name: /File path built from request data/ }).click();
   await expect(page.locator('.rationale code')).toHaveText('fs.readFile');
   await expect(page.locator('.rationale script')).toHaveCount(0);
+  await page.getByRole('tab', { name: /Objectives/ }).click();
+  await expect(page.getByText('Every finding has a verdict')).toBeVisible();
+  await expect(page.getByText('shallow clone')).toBeVisible();
+  await page.getByRole('tab', { name: /Activity/ }).click();
+  await expect(page.locator('.timeline li')).toHaveCount(2);
+});
+
+test('inbox links each request to its review', async ({ page }) => {
+  await mockApi(page);
+  await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: /Inbox/ }).click();
+  const poc = page.getByRole('article', { name: /proof of concept/ });
+  await poc.getByRole('button', { name: /Open review/ }).click();
+  await expect(page.getByRole('heading', { name: 'shop-api' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /case_1/ })).toHaveAttribute('aria-current', 'true');
 });

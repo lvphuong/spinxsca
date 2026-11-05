@@ -1,0 +1,28 @@
+id: 109-correct-sibling-baseline-spring
+title: One account operation lacks the @PreAuthorize its siblings carry (Spring)
+description: >-
+  get, update and export are annotated with @PreAuthorize("#id == principal.id"); close is not, so
+  any authenticated user can delete any account. Reference case for annotation-based controls and
+  the baseline-correct reference.
+languages: [java]
+source: src
+findings:
+  - id: GT-1
+    category: BROKEN_OBJECT_LEVEL_AUTHORIZATION
+    cwe: [CWE-639, CWE-862]
+    path: main/java/com/example/accounts/AccountController.java
+    lines: [31, 34]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    family: accounts
+negatives:
+  - path: main/java/com/example/accounts/AccountController.java
+    lines: [16, 20]
+    reason: guarded by @PreAuthorize
+  - path: main/java/com/example/accounts/AccountController.java
+    lines: [22, 28]
+    reason: guarded by @PreAuthorize
+  - path: main/java/com/example/accounts/AccountController.java
+    lines: [36, 40]
+    reason: guarded by @PreAuthorize

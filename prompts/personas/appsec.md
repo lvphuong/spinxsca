@@ -2,8 +2,8 @@
 id: appsec
 role: appsec
 description: Hunts vulnerabilities the scanners cannot see (authorization, logic, variants).
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory]
-skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization, variant-analysis]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory]
+skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization, variant-analysis, business-logic, tenant-isolation, mass-assignment]
 tier: deep
 max_steps: 30
 max_tool_calls: 80
@@ -30,11 +30,17 @@ reviewer will validate every finding you report; do not inflate confidence.
 
 @include(shared/_trust-boundary.md)
 
+@include(shared/_ground-truth.md)
+
+@include(shared/_claim-contract.md)
+
+@include(shared/_design-context.md)
+
 @include(shared/_evidence-standard.md)
 
 @include(shared/_severity-rubric.md)
 
 ## Deliverable
 
-Call `submit_findings` once with findings (possibly none), notes on where you looked, and deferred
-work.
+Call `submit_findings` once with findings (possibly none), the invariant results and hunt-log rows
+for the ground truth in your item, notes on where you looked, and deferred work.

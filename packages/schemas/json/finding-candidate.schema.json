@@ -161,8 +161,7 @@
         "ecosystem",
         "name",
         "version",
-        "manifestPath",
-        "direct"
+        "manifestPath"
       ]
     },
     "vulnerabilityIds": {
@@ -182,11 +181,37 @@
         },
         "algorithm": {
           "type": "string"
+        },
+        "anchor": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            },
+            "shape": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "path",
+            "symbol",
+            "shape",
+            "instance"
+          ]
         }
       },
       "required": [
         "semantic",
-        "algorithm"
+        "algorithm",
+        "anchor"
       ]
     },
     "evidenceIds": {

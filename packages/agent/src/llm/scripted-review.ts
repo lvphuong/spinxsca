@@ -71,17 +71,38 @@ export class ScriptedReviewProvider implements LlmProvider {
         return call('submit_plan', { notes: 'Scripted lead: the seeded work covers this case.', done: true });
       case 'submit_answer':
         return call('submit_answer', { answer: 'Scripted explore: no answer.', citations: [] });
-      case 'submit_findings':
+      case 'submit_recon':
+        return call('submit_recon', scriptedRecon(prompt));
+      case 'submit_findings': {
+        if (/Work item: LOGIC_AUDIT/.test(prompt)) return call('submit_findings', scriptedLogicAudit(prompt));
         return call('submit_findings', {
           findings: [],
           notes: 'Scripted reviewer: no code analysis performed.',
           deferred: [],
+          invariantResults: [],
+          variantLog: [],
         });
+      }
       case 'submit_triage': {
         const handle = field(prompt, 'Handle') ?? 'CF-1';
         if (tools.has('get_finding') && !used.has('get_finding')) return call('get_finding', { handle });
         const [path = '', line = '1'] = (field(prompt, 'Location') ?? '').split(/:(?=\d+$)/);
         const severity = field(prompt, 'Severity') ?? 'MEDIUM';
+        const agentReported = /^Reported by: /m.test(prompt);
+        if (/scripted:expect-false-positive/.test(prompt) && !rejected) {
+          // Test fixture: a refutation without a cited contradiction, to exercise the host's rejection.
+          return call('submit_triage', {
+            handle,
+            verdict: 'FALSE_POSITIVE',
+            severity,
+            confidence: 'HIGH',
+            rationale: 'Scripted validator: there is no ownership check here but I think it is fine.',
+            evidence: [],
+            counterevidence: ['the framework probably handles it'],
+            noiseReason: 'guess',
+            missingEvidence: [],
+          });
+        }
         if (rejected) {
           return call('submit_triage', {
             handle,
@@ -95,14 +116,26 @@ export class ScriptedReviewProvider implements LlmProvider {
           });
         }
         const high = severity === 'HIGH' || severity === 'CRITICAL';
+        const links = ['reachability', 'input_control', 'sanitization', 'sink', 'authz', 'preconditions'] as const;
         return call('submit_triage', {
           handle,
           verdict: 'TRUE_POSITIVE',
           severity,
           confidence: 'MEDIUM',
-          rationale: 'Scripted validator: accepts the scanner evidence at the reported line without further analysis.',
+          rationale: agentReported
+            ? 'Scripted validator: re-derived the reported claim at the cited line; every link held (scripted).'
+            : 'Scripted validator: accepts the scanner evidence at the reported line without further analysis.',
           evidence: [{ path, startLine: Number(line), endLine: Number(line), note: 'reported line' }],
           counterevidence: [],
+          ...(agentReported
+            ? {
+                refutationAttempts: links.map((link) => ({
+                  link,
+                  result: 'held',
+                  evidence: `${path}:${line} (scripted)`,
+                })),
+              }
+            : {}),
           ...(high
             ? {
                 attackPath: {
@@ -201,4 +234,164 @@ export class ScriptedReviewProvider implements LlmProvider {
 
 export function scriptedReviewProvider(): ScriptedReviewProvider {
   return new ScriptedReviewProvider();
+}
+
+interface ScriptedCensusRow {
+  method: string;
+  route: string;
+  path: string;
+  line: number;
+  flagged: boolean;
+}
+
+/** Census rows parsed back from the rendered worksheet in the RECON item description. */
+function censusRows(prompt: string): Array<{ group: string; rows: ScriptedCensusRow[] }> {
+  const groups: Array<{ group: string; rows: ScriptedCensusRow[] }> = [];
+  let current: (typeof groups)[number] | undefined;
+  for (const line of prompt.split('\n')) {
+    const g = /^### (.+?) \(\d+ operations/.exec(line);
+    if (g) {
+      current = { group: g[1] as string, rows: [] };
+      groups.push(current);
+      continue;
+    }
+    const r = /^- (\[!\] )?([A-Z]+) (\S+) \((\S+?):(\d+)\)/.exec(line);
+    if (r && current) {
+      current.rows.push({
+        flagged: Boolean(r[1]),
+        method: r[2] as string,
+        route: r[3] as string,
+        path: r[4] as string,
+        line: Number(r[5]),
+      });
+    }
+  }
+  return groups;
+}
+
+/** Recon derived only from the census worksheet: flagged groups become families and invariants. */
+function scriptedRecon(prompt: string) {
+  const groups = censusRows(prompt).filter((g) => g.rows.some((r) => r.flagged) && g.rows.length >= 2);
+  let inv = 0;
+  const invariants: unknown[] = [];
+  const baselines: unknown[] = [];
+  const families = groups.map((g, i) => {
+    const familyId = `FAM-${i + 1}`;
+    const safe = g.rows.find((r) => !r.flagged);
+    let baselineId: string | undefined;
+    if (safe) {
+      baselineId = `BL-${i + 1}`;
+      baselines.push({
+        baselineId,
+        pattern: `${g.group}: scoped operation`,
+        location: { path: safe.path, startLine: safe.line, endLine: safe.line },
+        whyCorrect: `${safe.method} ${safe.route} carries the control its siblings lack (scripted).`,
+      });
+    }
+    for (const r of g.rows.filter((x) => x.flagged)) {
+      invariants.push({
+        invariantId: `INV-${++inv}`,
+        location: { path: r.path, startLine: r.line, endLine: r.line },
+        expected: `${r.method} ${r.route} only acts on objects the caller owns`,
+        howToCheck: 'Read the handler and the data access it reaches for an owner or tenant predicate.',
+        packets: [],
+        familyId,
+      });
+    }
+    return {
+      familyId,
+      rootCause: `${g.group} operations that load an object by identifier`,
+      ...(baselineId ? { baselineId } : {}),
+      members: g.rows.map((r) => ({ path: r.path, startLine: r.line, label: `${r.method} ${r.route}` })),
+    };
+  });
+  return {
+    threatModel: {
+      summary: `Scripted recon: ${groups.length} resource group(s) with an unscoped sibling.`,
+      trustBoundaries: ['client -> API'],
+      packets: [],
+      notes: ['scripted stand-in derived from the census worksheet'],
+    },
+    groundTruth: {
+      archetype: 'http_api',
+      archetypeNote: 'scripted',
+      trustClaims: [],
+      invariants,
+      baselines,
+      families,
+      carveouts: [],
+      residualUnknowns: [],
+      notes: ['scripted stand-in'],
+    },
+  };
+}
+
+/** Logic audit derived from the ground truth slice rendered in the item. */
+function scriptedLogicAudit(prompt: string) {
+  const invariants = [...prompt.matchAll(/^- (INV-\d+) @ (\S+?):(\d+)(?:-\d+)?:/gm)].map((m) => ({
+    id: m[1] as string,
+    path: m[2] as string,
+    line: Number(m[3]),
+  }));
+  const baseline = /^- (BL-\d+) /m.exec(prompt)?.[1];
+  const families: Array<{ id: string; members: Array<{ path: string; line: number; label: string }> }> = [];
+  let current: (typeof families)[number] | undefined;
+  for (const line of prompt.split('\n')) {
+    const fam = /^- (FAM-\d+) /.exec(line);
+    if (fam) {
+      current = { id: fam[1] as string, members: [] };
+      families.push(current);
+      continue;
+    }
+    const member = /^ {2}- (\S+?):(\d+) (.*)$/.exec(line);
+    if (member && current)
+      current.members.push({ path: member[1] as string, line: Number(member[2]), label: member[3] as string });
+    else if (line.startsWith('#')) current = undefined;
+  }
+  const flagged = new Set(invariants.map((i) => `${i.path}:${i.line}`));
+  const findings = invariants.map((i) => {
+    const family = families.find((f) => f.members.some((m) => m.path === i.path && m.line === i.line));
+    const label = family?.members.find((m) => m.path === i.path && m.line === i.line)?.label ?? `${i.path}:${i.line}`;
+    return {
+      category: 'BROKEN_OBJECT_LEVEL_AUTHORIZATION',
+      cwe: ['CWE-639'],
+      title: `Missing ownership check in ${label}`,
+      summary: `${label} acts on an object by identifier without scoping the data access to the caller, unlike its sibling operations (scripted).`,
+      confidence: 'MEDIUM',
+      severity: 'HIGH',
+      attacker: 'authenticated user',
+      invariantViolated: 'callers may only act on objects they own',
+      claim: `An authenticated user can act on any object through ${label} because the handler never checks ownership.`,
+      preconditions: ['the caller holds a valid session'],
+      capabilitiesGained: ['read or change records of other users'],
+      proofObligations: [],
+      threatModelClass: 'real_bug',
+      invariantId: i.id,
+      ...(family ? { familyId: family.id } : {}),
+      ...(baseline ? { baselineReference: baseline } : {}),
+      locations: [{ path: i.path, startLine: i.line, endLine: i.line, role: 'primary' }],
+      evidence: [`${i.path}:${i.line} has no owner predicate on its data access (scripted)`],
+      counterevidence: [],
+      remediation: 'Scope the lookup by the authenticated principal or add an ownership guard.',
+    };
+  });
+  return {
+    findings,
+    notes: 'Scripted logic audit derived from the ground-truth slice.',
+    deferred: [],
+    invariantResults: invariants.map((i) => ({
+      invariantId: i.id,
+      result: 'FAIL',
+      evidence: [{ path: i.path, startLine: i.line, endLine: i.line }],
+      note: 'scripted',
+    })),
+    variantLog: families.flatMap((f) =>
+      f.members.map((m) => ({
+        familyId: f.id,
+        member: { path: m.path, startLine: m.line },
+        verdict: flagged.has(`${m.path}:${m.line}`) ? 'VULNERABLE' : 'SAFE',
+        note: 'scripted',
+      })),
+    ),
+  };
 }

@@ -24,6 +24,9 @@
         },
         "commitSha": {
           "type": "string"
+        },
+        "branch": {
+          "type": "string"
         }
       },
       "required": [
@@ -110,6 +113,13 @@
             "digest": {
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "ecosystems": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [
@@ -146,6 +156,10 @@
         },
         "model": {
           "type": "string"
+        },
+        "autonomyDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       },
       "required": [

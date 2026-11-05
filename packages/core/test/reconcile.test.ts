@@ -202,3 +202,37 @@ describe('reconcile', () => {
     expect(result.assessments).toHaveLength(0);
   });
 });
+
+describe('AI-discovered groups (ADR-050)', () => {
+  it('marks a group no scanner reported as discovered by an AI role', () => {
+    const result = run(
+      [
+        candidate(
+          'fp9',
+          {},
+          { scanner: 'ai-review', ruleId: 'ai-review.bola', message: 'Claim: any user reads any order.' },
+        ),
+      ],
+      [],
+    );
+    const a = result.assessments[0];
+    expect(a?.discoveredBy).toBe('ai');
+    expect(a?.assessedBy).toBe('agent:discovery/ai-review');
+    expect(a?.verificationLevel).toBe('L2_CONTEXT');
+    expect(a?.reasoningSummary).toContain('Claim:');
+  });
+
+  it('keeps the scanner as primary when an AI draft shares the fingerprint', () => {
+    const result = run(
+      [
+        candidate('fp8', {}, { candidateId: 'cand_ai', scanner: 'ai', ruleId: 'ai.investigator.sqli' }),
+        candidate('fp8', {}, { candidateId: 'cand_semgrep' }),
+      ],
+      [],
+    );
+    const a = result.assessments[0];
+    expect(a?.discoveredBy).toBe('scanner');
+    expect(a?.assessedBy).toBe('host:scanner-l1');
+    expect(result.occurrences[0]?.ruleIds).toEqual(['ai.investigator.sqli', 'spinxsca.js-sqli']);
+  });
+});

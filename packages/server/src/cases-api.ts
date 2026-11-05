@@ -1,4 +1,11 @@
-import { type CaseRepository, latestVerdicts, newId } from '@spinxsca/core';
+import {
+  answerContextQuestion,
+  type CaseRepository,
+  declineContextQuestion,
+  isContextQuestion,
+  latestVerdicts,
+  newId,
+} from '@spinxsca/core';
 import { type ApprovalRequest, grantFromApproval, validateGrant } from '@spinxsca/governance';
 import type { ApprovalRecord, GrantScope } from '@spinxsca/schemas';
 import type { Hono, MiddlewareHandler } from 'hono';
@@ -10,9 +17,12 @@ import type { ProjectEntry, Registry, Role, TokenEntry } from './registry';
 import type { ProjectStates } from './state';
 
 const ApprovalDecision = z.strictObject({
-  decision: z.enum(['approve', 'deny']),
+  decision: z.enum(['approve', 'deny', 'answer']),
   grant: z.enum(['once', 'case', 'standing']).default('once'),
   reason: z.string().min(1).max(2000).optional(),
+  /** `answer`: a review question from recon (ADR-051); the answer becomes claimed project memory. */
+  answer: z.string().min(1).max(2000).optional(),
+  provenance: z.string().min(1).max(200).optional(),
 });
 const ProjectAi = z.strictObject({
   level: z.enum(['off', 'explain', 'standard', 'deep']),
@@ -154,6 +164,56 @@ export function mountCaseApi(app: Hono<Env>, ctx: CaseApiContext): void {
     const approval = await cases.getApproval(c.req.param('approvalId'));
     if (!approval) throw new HTTPException(404, { message: 'approval not found' });
     const actor = c.get('actor');
+    if (isContextQuestion(approval)) {
+      // Review questions are answered or declined; the answer is a claimed fact, never a grant.
+      if (body.decision === 'approve')
+        throw new HTTPException(400, {
+          message: 'a review question is answered, not approved: send decision "answer"',
+        });
+      if (body.decision === 'answer' && (!body.answer || !body.provenance))
+        throw new HTTPException(400, { message: 'answer and provenance are required' });
+      try {
+        const resolved =
+          body.decision === 'answer'
+            ? await answerContextQuestion(cases, approval.approvalId, {
+                answer: body.answer as string,
+                provenance: body.provenance as string,
+                by: actor.name,
+                now: clock.now(),
+              })
+            : {
+                approval: await declineContextQuestion(cases, approval.approvalId, {
+                  by: actor.name,
+                  ...(body.reason ? { reason: body.reason } : {}),
+                  now: clock.now(),
+                }),
+                retriaged: [] as string[],
+              };
+        audit(c, 'approval.resolve', approval.approvalId, { status: resolved.approval.status, tool: approval.tool });
+        const resume = resolved.retriaged.length
+          ? registry.enqueue(
+              {
+                kind: 'CASE_RESUME',
+                projectId: project.projectId,
+                payload: { caseId: approval.caseId, trigger: 'api' },
+                idempotencyKey: `resume:${approval.caseId}:${approval.approvalId}`,
+                pool: project.workerPool,
+              },
+              clock.now(),
+            )
+          : undefined;
+        return c.json({
+          approval: resolved.approval,
+          retriaged: resolved.retriaged,
+          ...(resume ? { resumeJobId: resume.job.jobId } : {}),
+        });
+      } catch (err) {
+        if (/already (approved|denied|expired|cancelled)/.test((err as Error).message))
+          return c.json({ error: 'already resolved', approval: await cases.getApproval(approval.approvalId) }, 409);
+        throw err;
+      }
+    }
+    if (body.decision === 'answer') throw new HTTPException(400, { message: 'only review questions take an answer' });
     // Grants are validated by the host: human-only requests and scopes not offered become "once".
     const checked = validateGrant(toRequest(approval), {
       status: body.decision === 'approve' ? 'approved' : 'denied',

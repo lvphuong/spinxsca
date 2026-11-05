@@ -6,13 +6,14 @@ import {
   type CaseRepository,
   evaluatePolicy,
   fixFindingIteratively,
+  isContextQuestion,
   latestVerdicts,
   newId,
   runScan,
   scrubberFromSpans,
   verifyChain,
 } from '@spinxsca/core';
-import { MemoryKind, type ReviewCase, SEVERITY_RANK, type Severity } from '@spinxsca/schemas';
+import { GroundTruth, MemoryKind, type ReviewCase, SEVERITY_RANK, type Severity } from '@spinxsca/schemas';
 import pc from 'picocolors';
 import { ttyApprover } from '../approval-prompt';
 import { autonomyConfig, createReviewer, type ReviewFlags, reviewPorts } from '../autonomy';
@@ -37,7 +38,10 @@ export async function reviewCommand(path: string | undefined, options: ReviewCom
   const loaded = loadConfig(options.config);
   const ai = aiOptions(loaded, { ...options, ai: 'deep' }, true);
   if (!ai) throw new CliError('review needs an AI provider');
-  const config = autonomyConfig(loaded, options, ai.maxCostUsd);
+  const config = {
+    ...autonomyConfig(loaded, options, ai.maxCostUsd),
+    ...(ai.context ? { context: ai.context } : {}),
+  };
   return withEngine(path, { ...options, aiConfig: ai }, async (engine) => {
     if (!options.json) {
       status(
@@ -68,7 +72,12 @@ export async function reviewCommand(path: string | undefined, options: ReviewCom
         exclude: [...(loaded.config.scan?.exclude ?? []), ...(options.exclude ?? [])],
         baseline: { kind: 'auto' },
         reuseCache: true,
-        ai: { level: 'deep', maxFindings: ai.maxFindings, maxCostUsd: config.maxCostUsd },
+        ai: {
+          level: 'deep',
+          maxFindings: ai.maxFindings,
+          maxCostUsd: config.maxCostUsd,
+          ...(ai.context ? { context: ai.context } : {}),
+        },
         ...(options.case ? { reviewCaseId: options.case } : {}),
         signal: controller.signal,
         onProgress: (event) => {
@@ -147,6 +156,7 @@ export async function reviewCommand(path: string | undefined, options: ReviewCom
         ...(failOn ? { failOnSeverity: failOn as never } : {}),
         newFindingsOnly: loaded.config.policy?.new_findings_only ?? true,
         trustAiDowngrades: loaded.config.gate?.trust_ai_downgrades ?? false,
+        aiDiscoveredMinClassification: loaded.config.gate?.ai_discovered_min_classification ?? 'CONFIRMED',
       });
       if (options.json) {
         console.log(
@@ -182,15 +192,22 @@ export async function reviewCommand(path: string | undefined, options: ReviewCom
 }
 
 async function renderCase(cases: CaseRepository, rc: ReviewCase): Promise<string> {
+  const items = await cases.listWorkItems(rc.caseId);
+  const pending = await cases.listApprovals({ caseId: rc.caseId, status: 'PENDING' });
+  const recon = GroundTruth.safeParse(
+    (items.find((i) => i.kind === 'RECON')?.result as { groundTruth?: unknown } | undefined)?.groundTruth,
+  );
   return caseReport({
     rc,
     objectives: await cases.listObjectives(rc.caseId),
-    items: await cases.listWorkItems(rc.caseId),
+    items,
     handles: await cases.listHandles(rc.caseId),
     verdicts: await cases.listVerdicts(rc.caseId),
     checks: await cases.listChecks(rc.caseId),
     ledger: await cases.getLedger(rc.caseId),
-    pendingApprovals: (await cases.listApprovals({ caseId: rc.caseId, status: 'PENDING' })).length,
+    pendingApprovals: pending.length,
+    ...(recon.success ? { groundTruth: recon.data } : {}),
+    openQuestions: pending.filter(isContextQuestion).map((a) => ({ id: a.approvalId, question: a.title })),
   });
 }
 

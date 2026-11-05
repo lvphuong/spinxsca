@@ -1,0 +1,27 @@
+id: 101-idor-sibling-express
+title: Sibling route updates an order by id alone (Express, Sequelize)
+description: >-
+  GET /orders/:id scopes the lookup to the owner (baseline-correct reference); PUT /orders/:id updates
+  by id alone, so any authenticated user can change any order. Reference case for baseline diffing
+  and the resource × operation census (ADR-049).
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: BROKEN_OBJECT_LEVEL_AUTHORIZATION
+    cwe: [CWE-639]
+    path: routes/orders.js
+    lines: [14, 21]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    family: orders
+negatives:
+  - path: routes/orders.js
+    lines: [7, 11]
+    reason: lookup scoped by ownerId
+  - path: routes/orders.js
+    lines: [23, 26]
+    reason: list scoped by ownerId
+  - path: auth.js
+    reason: authentication middleware is correct

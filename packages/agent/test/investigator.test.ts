@@ -7,6 +7,7 @@ import {
   loadPromptBundle,
   ScriptedProvider,
   scriptedInvestigationProvider,
+  scriptedLogicProvider,
 } from '../src/index';
 
 const PROMPTS = resolve(__dirname, '../../../prompts');
@@ -106,6 +107,7 @@ const finding = {
   severity: 'HIGH',
   attacker: 'authenticated user',
   invariantViolated: 'callers may only read their own orders',
+  claim: 'An authenticated user can read any order by id without an ownership check.',
   locations: [{ path: 'orders.controller.ts', startLine: 4, endLine: 5, role: 'primary' }],
   evidence: ['findOne passes id straight to findById'],
   counterevidence: [],
@@ -180,7 +182,7 @@ describe('AgentInvestigator', () => {
       providers.push(p);
       return p;
     };
-    const investigator = new AgentInvestigator({ provider, prompts });
+    const investigator = new AgentInvestigator({ provider, prompts, recon: { enabled: false } });
     const outcome = await investigator.investigate(subject, source, { maxCostUsd: 5 });
     expect(outcome.runs.map((r) => r.role)).toEqual(['planner', 'investigator', 'auditor']);
     expect(outcome.drafts).toHaveLength(1);
@@ -253,20 +255,207 @@ describe('AgentInvestigator', () => {
           ],
         }),
       ]);
-    const outcome = await new AgentInvestigator({ provider, prompts }).investigate(subject, source, { maxCostUsd: 5 });
+    const outcome = await new AgentInvestigator({ provider, prompts, recon: { enabled: false } }).investigate(
+      subject,
+      source,
+      { maxCostUsd: 5 },
+    );
     expect(outcome.runs.map((r) => r.role)).toEqual(['planner', 'auditor']);
     expect(outcome.drafts).toHaveLength(1);
     expect(outcome.runs[1]?.steps).toHaveLength(3);
   });
 
   it('ships a scripted provider that exercises the pipeline without findings', async () => {
-    const outcome = await new AgentInvestigator({ provider: scriptedInvestigationProvider, prompts }).investigate(
+    const outcome = await new AgentInvestigator({
+      provider: scriptedInvestigationProvider,
+      prompts,
+      recon: { enabled: false },
+    }).investigate(subject, source, { maxCostUsd: 1 });
+    expect(outcome.drafts).toEqual([]);
+    expect(outcome.runs.every((r) => r.status === 'COMPLETED')).toBe(true);
+    expect(outcome.costUsd).toBe(0);
+  });
+});
+
+describe('AgentInvestigator recon-first flow (ADR-049)', () => {
+  const prompts = loadPromptBundle(PROMPTS);
+  const recon = {
+    threatModel: {
+      summary: 'Nest API with JWT auth',
+      trustBoundaries: ['user -> api'],
+      packets: [
+        {
+          packetId: 'authz-1',
+          perspective: 'AUTHZ_AND_BUSINESS_LOGIC',
+          attacker: 'authenticated user',
+          protectedAsset: 'other users orders',
+          entryPoints: [{ path: 'orders.controller.ts', line: 3, label: 'GET /orders/:id' }],
+          expectedControls: ['ownership check'],
+          questions: ['Does findOne verify the caller owns the order?'],
+        },
+      ],
+      notes: [],
+    },
+    groundTruth: {
+      archetype: 'http_api',
+      invariants: [
+        {
+          invariantId: 'INV-1',
+          location: { path: 'orders.controller.ts', startLine: 4, endLine: 5 },
+          expected: 'findOne scopes the lookup to the caller',
+          howToCheck: 'read findById',
+          packets: ['authz-1'],
+          familyId: 'FAM-1',
+        },
+      ],
+      baselines: [
+        {
+          baselineId: 'BL-1',
+          pattern: 'owner-scoped lookup',
+          location: { path: 'orders.service.ts', startLine: 2, endLine: 2 },
+          whyCorrect: 'service exposes the lookup; callers must scope it',
+        },
+      ],
+      families: [
+        {
+          familyId: 'FAM-1',
+          rootCause: 'order lookups by id',
+          baselineId: 'BL-1',
+          members: [
+            { path: 'orders.controller.ts', startLine: 3, label: 'GET /orders/:id' },
+            { path: 'orders.service.ts', startLine: 2, label: 'OrdersService.findById' },
+          ],
+        },
+      ],
+      carveouts: [
+        {
+          carveoutId: 'CO-1',
+          pattern: 'service methods take an id without a user',
+          justification: 'authorization is a controller concern here',
+          evidence: [{ path: 'orders.service.ts', startLine: 2, endLine: 2 }],
+        },
+      ],
+      residualUnknowns: [],
+      notes: [],
+    },
+  };
+  const complete = {
+    findings: [{ ...finding, invariantId: 'INV-1', familyId: 'FAM-1', baselineReference: 'BL-1' }],
+    resolvedQuestions: [],
+    reviewedFiles: ['orders.controller.ts'],
+    deferred: [],
+    invariantResults: [{ invariantId: 'INV-1', result: 'FAIL', evidence: [], note: '' }],
+    variantLog: [
+      { familyId: 'FAM-1', member: { path: 'orders.controller.ts', startLine: 3 }, verdict: 'VULNERABLE', note: '' },
+      { familyId: 'FAM-1', member: { path: 'orders.service.ts', startLine: 2 }, verdict: 'SAFE', note: '' },
+    ],
+  };
+  const empty = {
+    findings: [],
+    resolvedQuestions: [],
+    reviewedFiles: [],
+    deferred: [],
+    invariantResults: [],
+    variantLog: [],
+  };
+
+  it('runs recon, slices ground truth per packet, rejects incomplete checklists and stops the critic early', async () => {
+    const providers: ScriptedProvider[] = [];
+    const provider = () => {
+      const p = new ScriptedProvider([
+        (request) => {
+          if (request.tools.some((t) => t.name === 'submit_recon'))
+            return { content: [{ type: 'tool_use', id: 'r', name: 'submit_recon', input: recon }] };
+          const critic = request.system.includes('completeness re-pass');
+          const auditor = request.system.includes('independent application security auditor');
+          if (critic || auditor)
+            return {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'c',
+                  name: 'submit_investigation',
+                  input: { ...empty, deferred: auditor ? ['time'] : [] },
+                },
+              ],
+            };
+          // Investigator: first a FAIL without a finding (rejected), then the complete deliverable.
+          return {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'i1',
+                name: 'submit_investigation',
+                input: { ...complete, findings: [] },
+              },
+            ],
+          };
+        },
+        () => ({ content: [{ type: 'tool_use', id: 'i2', name: 'submit_investigation', input: complete }] }),
+      ]);
+      providers.push(p);
+      return p;
+    };
+    const outcome = await new AgentInvestigator({
+      provider,
+      prompts,
+      recon: { criticPasses: 2 },
+      context: {
+        accepted_risks: ['Admins may read every order.'],
+        roles: [],
+        trust_claims: [],
+        business_invariants: [],
+      },
+    }).investigate(subject, source, { maxCostUsd: 5 });
+    expect(outcome.runs.map((r) => r.role)).toEqual(['recon', 'investigator', 'auditor', 'critic']);
+    expect(outcome.drafts).toHaveLength(1);
+    expect(outcome.drafts[0]?.claim?.claim).toContain('authenticated user');
+    expect(outcome.drafts[0]?.message).toContain('Claim:');
+    expect(outcome.groundTruth?.invariants).toHaveLength(1);
+    expect(outcome.groundTruth?.carveouts.map((c) => c.carveoutId)).toEqual(['CO-1', 'CO-900']);
+    expect(outcome.coverage).toEqual({ invariantGaps: [], invariantTotal: 1, memberGaps: [], memberTotal: 2 });
+    expect(outcome.deferred).toEqual(['auditor: time']);
+    // providers[0]: constructor; [1]: recon; [2]: investigator; [3]: auditor; [4]: critic.
+    const reconPrompt = JSON.stringify(providers[1]?.requests[0]?.messages[0]);
+    expect(reconPrompt).toContain('<census_json>');
+    expect(reconPrompt).toContain('<operator_context');
+    const investigatorRequests = providers[2]?.requests ?? [];
+    expect(investigatorRequests).toHaveLength(2);
+    const investigatorPrompt = JSON.stringify(investigatorRequests[0]?.messages[0]);
+    expect(investigatorPrompt).toContain('<ground_truth');
+    expect(investigatorPrompt).toContain('INV-1');
+    expect(JSON.stringify(investigatorRequests[1]?.messages.at(-1))).toContain('INV-1 is FAIL but no finding');
+    expect(providers[2]?.requests[0]?.system).toContain('Admins may read every order.');
+    const auditorPrompt = JSON.stringify(providers[3]?.requests[0]?.messages[0]);
+    expect(auditorPrompt).toContain('CO-1');
+    expect(auditorPrompt).not.toContain('INV-1');
+    const criticPrompt = JSON.stringify(providers[4]?.requests[0]?.messages[0]);
+    expect(criticPrompt).toContain('Already reported');
+    expect(criticPrompt).toContain(finding.title);
+    expect(providers).toHaveLength(5);
+  });
+
+  it('keeps going without ground truth when recon fails', async () => {
+    const provider = () =>
+      new ScriptedProvider([
+        (request) =>
+          request.tools.some((t) => t.name === 'submit_recon')
+            ? { content: [{ type: 'text', text: 'I cannot do this.' }], stopReason: 'end_turn' }
+            : { content: [{ type: 'tool_use', id: 'a', name: 'submit_investigation', input: empty }] },
+      ]);
+    const outcome = await new AgentInvestigator({ provider, prompts }).investigate(subject, source, { maxCostUsd: 5 });
+    expect(outcome.runs.map((r) => r.role)).toEqual(['recon', 'auditor']);
+    expect(outcome.infraFailures?.[0]).toContain('recon');
+    expect(outcome.deferred).toContain('recon failed: investigators ran without ground truth');
+  });
+
+  it('ships a scripted logic provider that derives packets from the census', async () => {
+    const outcome = await new AgentInvestigator({ provider: scriptedLogicProvider, prompts }).investigate(
       subject,
       source,
       { maxCostUsd: 1 },
     );
-    expect(outcome.drafts).toEqual([]);
-    expect(outcome.runs.every((r) => r.status === 'COMPLETED')).toBe(true);
-    expect(outcome.costUsd).toBe(0);
+    expect(outcome.runs.map((r) => r.role)).toEqual(['recon', 'auditor']);
+    expect(outcome.groundTruth?.archetype).toBe('http_api');
   });
 });

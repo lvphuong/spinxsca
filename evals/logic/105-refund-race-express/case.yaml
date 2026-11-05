@@ -1,0 +1,22 @@
+id: 105-refund-race-express
+title: Refund check-then-act without a transaction (Express)
+description: >-
+  The balance is read, compared and written in application code with no transaction, lock or
+  conditional update; two concurrent refunds both pass the check. Needs a real model (live_only):
+  the scripted provider cannot reason about concurrency.
+languages: [javascript]
+source: src
+findings:
+  - id: GT-1
+    category: RACE_CONDITION
+    cwe: [CWE-362, CWE-367]
+    path: routes/wallet.js
+    lines: [8, 16]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    live_only: true
+negatives:
+  - path: routes/wallet.js
+    lines: [18, 21]
+    reason: read-only, scoped by owner

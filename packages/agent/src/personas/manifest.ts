@@ -32,6 +32,10 @@ export const PERSONA_RISK_CEILING: Readonly<Record<string, RiskClass>> = {
   exploit: 'EXEC_REPO_CODE',
   fixer: 'WRITE_REPO',
   verifier: 'EXEC_REPO_CODE',
+  // Phase 6 (ADR-049): recon and logic audits analyse; the critic only reads and records.
+  recon: 'ANALYZE',
+  logic: 'ANALYZE',
+  critic: 'RECORD',
 };
 
 /** Tools a persona may never hold whatever its ceiling (separation of powers). */
@@ -40,6 +44,8 @@ const FORBIDDEN: Readonly<Record<string, readonly string[]>> = {
   verifier: ['patch_propose', 'request_apply', 'harness_write'],
   exploit: ['patch_propose', 'request_apply', 'submit_verdict'],
   fixer: ['submit_verdict', 'validation_run'],
+  recon: ['submit_verdict', 'propose_disposition', 'patch_propose', 'validation_run'],
+  critic: ['semgrep_rule', 'run_scanner', 'shell_exec', 'submit_verdict', 'propose_disposition'],
 };
 
 export function checkManifest(m: PersonaManifest): string[] {

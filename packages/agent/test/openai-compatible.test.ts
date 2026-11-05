@@ -142,6 +142,7 @@ describe('OpenAI-compatible provider', () => {
       );
     }) as unknown as typeof fetch;
     const investigator = new AgentInvestigator({
+      recon: { enabled: false },
       provider: () =>
         new OpenAICompatibleProvider({ baseUrl: 'http://llm/v1', model: 'local-model', fetch: fakeFetch }),
       prompts: loadPromptBundle(PROMPTS),

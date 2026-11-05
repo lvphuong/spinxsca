@@ -111,8 +111,12 @@ aiFlags(
   .addOption(
     new Option(
       '--ai <level>',
-      'AI: explain validates new findings; standard also plans, investigates and audits',
-    ).choices(['off', 'explain', 'standard']),
+      'AI: explain validates new findings; standard also reconnoitres, investigates and audits; deep runs a governed review case',
+    ).choices(['off', 'explain', 'standard', 'deep']),
+  )
+  .option(
+    '--context-pack <file>',
+    'operator context (roles, trust claims, business invariants, accepted risks) as YAML; never read from the repository',
   )
   .option('--max-ai-findings <n>', 'explain at most this many new findings')
   .option('--resume <scanId>', 'resume an interrupted scan')
@@ -306,6 +310,10 @@ aiFlags(
   .option('--no-l3', 'never run proofs of concept')
   .option('--fix', 'propose and verify fixes in a workspace copy (applying them always needs a human)')
   .option('--unattended', 'no terminal prompts: asks wait in the inbox')
+  .option(
+    '--context-pack <file>',
+    'operator context (roles, trust claims, business invariants, accepted risks) as YAML',
+  )
   .option('--exclude <glob>', 'exclude paths (repeatable)', collect)
   .option('--out <dir>', 'report directory')
   .option('--fail-on <severity>', 'exit 1 when findings at or above this severity remain')
@@ -347,6 +355,16 @@ inboxTarget(
 )
   .option('--reason <text>', 'why')
   .action(run((id: string, path: string, options: never) => inboxCommand('deny', id, path, options)));
+inboxTarget(
+  inbox
+    .command('answer')
+    .description('answer a review question from recon (the answer becomes claimed project memory, ADR-051)')
+    .argument('<approvalId>')
+    .argument('[path]', 'scanned directory', '.'),
+)
+  .requiredOption('--answer <text>', 'the answer, as a human knows it')
+  .requiredOption('--provenance <text>', 'who or which document establishes the answer')
+  .action(run((id: string, path: string, options: never) => inboxCommand('answer', id, path, options)));
 
 const caseCommand = program.command('case').description('inspect autonomous review cases');
 stateOptions(
@@ -566,13 +584,19 @@ program
   .option('--out <dir>', 'results directory (default: evals/results/<timestamp>)')
   .option('--no-stability', 'skip identity stability re-scans')
   .addOption(
-    new Option('--ai <level>', 'run AI explain on new findings during evaluation')
-      .choices(['off', 'explain'])
+    new Option(
+      '--ai <level>',
+      'AI during evaluation: explain validates new findings; standard/deep also run the recon-first investigation (ai-only ground truth is pending below standard)',
+    )
+      .choices(['off', 'explain', 'standard', 'deep'])
       .default('off'),
   )
   .addOption(
-    new Option('--ai-provider <provider>', 'AI provider for --ai explain')
-      .choices(['anthropic', 'scripted'])
+    new Option(
+      '--ai-provider <provider>',
+      'AI provider for --ai (scripted never calls a model; live_only ground truth stays pending)',
+    )
+      .choices(['anthropic', 'openai-compatible', 'scripted'])
       .default('scripted'),
   )
   .option('--json', 'JSON output')

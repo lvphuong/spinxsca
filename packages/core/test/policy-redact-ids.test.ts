@@ -142,3 +142,37 @@ describe('secret scrubber', () => {
     expect(scrubber.scrub('secret-one-two')).toMatch(/^<REDACTED:secret:[0-9a-f]{8}>$/);
   });
 });
+
+describe('AI-discovered findings at the gate (ADR-050)', () => {
+  const discovered = {
+    findingId: 'f2',
+    reconciliationState: 'NEW',
+    classification: 'POTENTIAL',
+    severity: 'HIGH',
+    discoveredBy: 'ai',
+    assessedBy: 'agent:discovery/ai',
+  } as FindingAssessment;
+
+  it('exempts an unvalidated AI-discovered finding by default', () => {
+    expect(gateView(discovered, false)).toEqual({ severity: 'HIGH', exempt: true });
+    expect(evaluatePolicy([discovered], { failOnSeverity: 'HIGH', newFindingsOnly: true }).passed).toBe(true);
+  });
+
+  it('blocks once the finding is CONFIRMED, or at POTENTIAL when the operator lowers the bar', () => {
+    expect(gateView({ ...discovered, classification: 'CONFIRMED' }, false).exempt).toBe(false);
+    expect(gateView(discovered, { aiDiscoveredMinClassification: 'POTENTIAL' }).exempt).toBe(false);
+    expect(
+      evaluatePolicy([discovered], {
+        failOnSeverity: 'HIGH',
+        newFindingsOnly: true,
+        aiDiscoveredMinClassification: 'POTENTIAL',
+      }).passed,
+    ).toBe(false);
+  });
+
+  it('leaves scanner-discovered findings untouched', () => {
+    expect(gateView({ ...discovered, discoveredBy: 'scanner', assessedBy: 'host:scanner-l1' }, false).exempt).toBe(
+      false,
+    );
+  });
+});

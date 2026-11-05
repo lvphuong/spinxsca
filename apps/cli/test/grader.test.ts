@@ -16,6 +16,7 @@ const evalCase: EvalCase = {
       lines: [8, 10],
       detectable_by: ['sast'],
       min_phase: 0,
+      live_only: false,
     },
     {
       id: 'GT-2',
@@ -25,6 +26,7 @@ const evalCase: EvalCase = {
       lines: [5, 5],
       detectable_by: ['sast'],
       min_phase: 0,
+      live_only: false,
     },
     {
       id: 'GT-3',
@@ -34,6 +36,7 @@ const evalCase: EvalCase = {
       lines: [1, 5],
       detectable_by: ['ai'],
       min_phase: 2,
+      live_only: false,
     },
   ],
   negatives: [{ path: 'a.js', lines: [15, 18], reason: 'parameterized' }],

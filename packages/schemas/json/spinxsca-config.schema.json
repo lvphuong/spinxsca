@@ -45,9 +45,490 @@
                 }
               },
               "additionalProperties": false
+            },
+            "osv": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "gitleaks": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "trivy": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "min_severity": {
+                  "type": "string",
+                  "enum": [
+                    "critical",
+                    "high",
+                    "medium",
+                    "low",
+                    "info"
+                  ]
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "knowledge_base": {
+      "type": "object",
+      "properties": {
+        "dir": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ai": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "default": "off",
+          "type": "string",
+          "enum": [
+            "off",
+            "explain",
+            "standard",
+            "deep"
+          ]
+        },
+        "provider": {
+          "default": "anthropic",
+          "type": "string",
+          "enum": [
+            "anthropic",
+            "openai-compatible",
+            "scripted"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "api_key_env": {
+          "default": "SPINXSCA_LLM_API_KEY",
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$"
+        },
+        "data_policy": {
+          "type": "object",
+          "properties": {
+            "exclude_paths": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allowed_providers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "anthropic",
+                  "openai-compatible",
+                  "scripted"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "effort": {
+          "default": "high",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "refusal_fallback": {
+          "default": "default",
+          "type": "string",
+          "enum": [
+            "default",
+            "off"
+          ]
+        },
+        "max_cost_usd_per_scan": {
+          "default": 5,
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_findings": {
+          "default": 20,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "send_source_snippets": {
+          "default": true,
+          "type": "boolean"
+        },
+        "recon": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "critic_passes": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "max_logic_items": {
+              "default": 8,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "census": {
+              "default": true,
+              "type": "boolean"
+            },
+            "second_opinion": {
+              "default": 0,
+              "type": "number",
+              "const": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "accepted_risks": {
+              "default": [],
+              "maxItems": 30,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              }
+            },
+            "roles": {
+              "default": [],
+              "maxItems": 20,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "trust": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "provenance": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "name",
+                  "trust",
+                  "provenance"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "trust_claims": {
+              "default": [],
+              "maxItems": 30,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "provenance": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "statement",
+                  "provenance"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "business_invariants": {
+              "default": [],
+              "maxItems": 30,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "provenance": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "statement",
+                  "provenance"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "autonomy": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "default": "supervised",
+              "type": "string",
+              "enum": [
+                "observe",
+                "supervised",
+                "autonomous"
+              ]
+            },
+            "reviewer": {
+              "default": "on",
+              "type": "string",
+              "enum": [
+                "off",
+                "shadow",
+                "on"
+              ]
+            },
+            "reviewer_model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auto_allow": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              }
+            },
+            "deny_tools": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              }
+            },
+            "extra_protected": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "risk_overrides": {
+              "default": {},
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "READ",
+                  "RECORD",
+                  "ANALYZE",
+                  "WRITE_WORKSPACE",
+                  "EXEC_REPO_CODE",
+                  "WRITE_REPO",
+                  "EXTERNAL",
+                  "GOVERNANCE",
+                  "EGRESS"
+                ]
+              }
+            },
+            "budgets": {
+              "type": "object",
+              "properties": {
+                "max_rounds": {
+                  "default": 6,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_cost_usd": {
+                  "default": 10,
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "max_sandbox_runs": {
+                  "default": 60,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_sandbox_cpu_sec": {
+                  "default": 1800,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_wall_clock_min": {
+                  "default": 90,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_parallel_workers": {
+                  "default": 3,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 6
+                }
+              },
+              "additionalProperties": false
+            },
+            "allow_unpriced": {
+              "default": false,
+              "type": "boolean"
+            },
+            "toolbox_image": {
+              "type": "string",
+              "pattern": "(^|@)sha256:[0-9a-f]{64}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "validation": {
+          "type": "object",
+          "properties": {
+            "l3": {
+              "default": false,
+              "type": "boolean"
+            },
+            "max_runs_per_finding": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "timeout_sec": {
+              "default": 120,
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 900
+            },
+            "memory_mb": {
+              "default": 1024,
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 8192
+            }
+          },
+          "additionalProperties": false
+        },
+        "remediation": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "max_iterations": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "min_severity": {
+              "type": "string",
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "info"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "pricing": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cache_read": {
+                "default": 0,
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -72,6 +553,56 @@
       },
       "additionalProperties": false
     },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "max_scan_age_hours": {
+          "default": 72,
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "fail_on_severity": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ]
+        },
+        "block_kev": {
+          "default": true,
+          "type": "boolean"
+        },
+        "epss_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "require_complete_coverage": {
+          "default": true,
+          "type": "boolean"
+        },
+        "max_kb_age_hours": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "trust_ai_downgrades": {
+          "default": false,
+          "type": "boolean"
+        },
+        "ai_discovered_min_classification": {
+          "default": "CONFIRMED",
+          "type": "string",
+          "enum": [
+            "CONFIRMED",
+            "POTENTIAL"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "output": {
       "type": "object",
       "properties": {
@@ -90,6 +621,10 @@
               "json"
             ]
           }
+        },
+        "sarif_include_unverified_ai": {
+          "default": false,
+          "type": "boolean"
         }
       },
       "additionalProperties": false

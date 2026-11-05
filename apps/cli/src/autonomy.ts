@@ -86,6 +86,14 @@ export function autonomyConfig(loaded: LoadedConfig, flags: ReviewFlags, maxCost
     ...(config.ai?.data_policy?.allowed_providers ? { allowedProviders: config.ai.data_policy.allowed_providers } : {}),
     ...(config.ai?.pricing ? { pricing: config.ai.pricing } : {}),
     protectedRoots: [loaded.path, config.knowledge_base?.dir].filter((p): p is string => Boolean(p)),
+    // Recon-first review (ADR-049) is on unless the operator disables ai.recon.
+    recon: {
+      enabled: config.ai?.recon?.enabled ?? true,
+      criticPasses: config.ai?.recon?.critic_passes ?? 1,
+      maxLogicItems: config.ai?.recon?.max_logic_items ?? 8,
+      census: config.ai?.recon?.census ?? true,
+    },
+    ...(config.ai?.context ? { context: config.ai.context } : {}),
   };
 }
 

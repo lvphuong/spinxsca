@@ -1,3 +1,4 @@
+import { type ResourceMatrix, renderCensus } from '@spinxsca/core';
 import type { CaseHandle, Objective, WorkItem, WorkItemKind } from '@spinxsca/schemas';
 
 /** Persona that triages a handle, by category: secrets and IaC have their own specialists. */
@@ -25,7 +26,21 @@ export interface ConductorInput {
   /** Operator objectives (`--objectives`), each becomes a mandatory hypothesis item. */
   objectives: readonly string[];
   maxThreatPackets?: number;
+  /** Recon-first flow (ADR-049): a RECON item runs before every hunt; false restores the Phase 5 board. */
+  recon?: boolean;
+  /** Deterministic census of the code index; flagged resource groups become LOGIC_AUDIT items. */
+  matrix?: ResourceMatrix;
+  maxLogicItems?: number;
+  /** Rendered operator context (ADR-051) shown to the recon item. */
+  operatorContext?: string;
 }
+
+export const RECON_ITEM = 'recon';
+export const logicItemSlug = (group: string) =>
+  `logic-${group
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .slice(0, 40)}`;
 
 const IAC_FILE =
   /(^|\/)(Dockerfile(\.[^/]*)?|docker-compose[^/]*\.ya?ml|[^/]*\.tf|Chart\.yaml|values[^/]*\.ya?ml|k8s\/[^/]*\.ya?ml|kubernetes\/[^/]*\.ya?ml)$/;
@@ -72,6 +87,23 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
     return w;
   };
 
+  const recon = input.recon ?? false;
+  const afterRecon = recon ? [`${input.caseId}:${RECON_ITEM}`] : [];
+  if (recon) {
+    item(
+      RECON_ITEM,
+      'RECON',
+      'recon',
+      'Reconnaissance: archetype, invariants, baselines, variant families, carve-outs',
+      {
+        description: [input.matrix ? renderCensus(input.matrix) : '', input.operatorContext ?? '']
+          .filter(Boolean)
+          .join('\n\n')
+          .slice(0, 6000),
+      },
+    );
+  }
+
   for (const h of input.handles) {
     if (h.packagePurl || h.category === 'VULNERABLE_DEPENDENCY') {
       item(
@@ -103,9 +135,32 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
   ranked.slice(0, limit).forEach(([path, endpoints], i) => {
     item(`threat-${i + 1}`, 'THREAT_PACKET', 'appsec', `Threat-model the endpoints in ${path}`, {
       description: endpoints.map((e) => `${e.method} ${e.route} (${e.path}:${e.line}, id ${e.id})`).join('\n'),
+      dependsOn: afterRecon,
     });
   });
   const rest = ranked.slice(limit).flatMap(([, e]) => e);
+
+  // Logic audits (ADR-049): one per resource group where a sibling lacks a control its siblings have.
+  if (recon && input.matrix) {
+    const flagged = input.matrix.groups.filter((g) => g.flaggedCount > 0).slice(0, input.maxLogicItems ?? 8);
+    for (const g of flagged) {
+      item(
+        logicItemSlug(g.group),
+        'LOGIC_AUDIT',
+        'logic',
+        `Logic audit of ${g.group}: ${g.flaggedCount} operation(s) without a sibling's control`,
+        {
+          description: g.rows
+            .map(
+              (r) =>
+                `${r.flagged ? '[!] ' : ''}${r.method} ${r.route} (${r.path}:${r.line}) authz=${r.controls.authz.join(',') || 'none'} scoped=${r.dataAccess.map((d) => d.scopedBy).join(',') || 'n/a'}`,
+            )
+            .join('\n'),
+          dependsOn: afterRecon,
+        },
+      );
+    }
+  }
 
   item(
     'secrets-sweep',
@@ -125,6 +180,7 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
     description: rest.length
       ? `Endpoints not covered by a threat packet:\n${rest.map((e) => `${e.method} ${e.route} (${e.path}:${e.line})`).join('\n')}`
       : '',
+    dependsOn: afterRecon,
   });
 
   const objectives: Objective[] = [];
@@ -140,6 +196,7 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
   input.objectives.forEach((text, i) => {
     const hyp = item(`objective-${i + 1}`, 'HYPOTHESIS', 'appsec', text.slice(0, 160), {
       description: `Operator objective: ${text}`,
+      dependsOn: afterRecon,
     });
     objective(`custom-${i + 1}`, 'CUSTOM', text.slice(0, 200), { itemId: hyp.itemId });
   });
@@ -164,5 +221,9 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
     objective('l3', 'L3_ATTEMPTED', 'Runtime-verifiable confirmed findings have a PoC outcome', {
       minSeverity: 'HIGH',
     });
+  if (recon) {
+    objective('invariants', 'INVARIANTS_CHECKED', 'Every ground-truth invariant has a PASS/FAIL/UNKNOWN result');
+    objective('families', 'FAMILIES_SWEPT', 'Every variant-family member has a hunt-log verdict');
+  }
   return { items, objectives };
 }

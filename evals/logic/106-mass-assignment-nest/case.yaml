@@ -1,0 +1,24 @@
+id: 106-mass-assignment-nest
+title: Profile update binds the whole request body (NestJS, Prisma)
+description: >-
+  PATCH /users/me spreads the request body into the user update, so a caller sets role, isAdmin or
+  emailVerified. live_only: the scripted provider only derives sibling-scope findings.
+languages: [typescript]
+source: src
+findings:
+  - id: GT-1
+    category: BUSINESS_LOGIC
+    cwe: [CWE-915]
+    path: users/users.controller.ts
+    lines: [17, 20]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    live_only: true
+negatives:
+  - path: users/users.controller.ts
+    lines: [11, 14]
+    reason: reads the caller's own record
+  - path: users/users.controller.ts
+    lines: [22, 25]
+    reason: public projection with an explicit select

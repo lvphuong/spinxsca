@@ -45,6 +45,10 @@ jobs:
         run: pnpm eval --out evals/results/ci
       - name: Evaluation of the AI pipeline (scripted provider, no API calls)
         run: pnpm spinxsca eval --ai explain --ai-provider scripted --no-stability --out evals/results/ci-ai
+      - name: Logic evaluation (recon-first, scripted provider; ADR-049)
+        run: pnpm spinxsca eval --suite logic --ai standard --ai-provider scripted --out evals/results/ci-logic
+      - name: Internal evaluation with the recon-first investigation (IDOR reference case)
+        run: pnpm spinxsca eval --suite internal --ai standard --ai-provider scripted --no-stability --case 003-idor-nest --out evals/results/ci-logic-internal
       - name: Governance evaluation (decision matrix)
         run: pnpm spinxsca eval --suite governance
       - name: Autonomous review gates (scripted provider, no API calls)

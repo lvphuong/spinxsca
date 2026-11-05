@@ -91,3 +91,17 @@ export interface AuditEvent {
   actor: string;
   data: Record<string, unknown>;
 }
+
+/** A queued unit of work on the local service (subset). Reviews scan first, then open a case. */
+export interface JobEntry {
+  jobId: string;
+  kind: string;
+  projectId?: string;
+  payload: Record<string, unknown>;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  attempts: number;
+  maxAttempts: number;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}

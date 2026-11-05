@@ -63,6 +63,9 @@
             },
             "commitSha": {
               "type": "string"
+            },
+            "branch": {
+              "type": "string"
             }
           },
           "required": [
@@ -149,6 +152,13 @@
                 "digest": {
                   "type": "string",
                   "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "ecosystems": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
@@ -185,6 +195,10 @@
             },
             "model": {
               "type": "string"
+            },
+            "autonomyDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
             }
           },
           "required": [
@@ -293,14 +307,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
-          },
-          "required": [
-            "CRITICAL",
-            "HIGH",
-            "MEDIUM",
-            "LOW",
-            "INFO"
-          ]
+          }
         },
         "byState": {
           "type": "object",
@@ -319,15 +326,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
-          },
-          "required": [
-            "NEW",
-            "EXISTING",
-            "REOPENED",
-            "RESOLVED",
-            "NOT_REEVALUATED",
-            "NEEDS_RECONCILIATION"
-          ]
+          }
         },
         "completeness": {
           "type": "string",

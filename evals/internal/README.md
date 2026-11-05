@@ -9,7 +9,7 @@ the live OSV database. Run with `pnpm eval`.
 |---|---|---|
 | 001 SQL injection (Express) | sast | 0 |
 | 002 XSS (React) | sast | 0 |
-| 003 IDOR (NestJS) | ai | 2 (pending) |
+| 003 IDOR (NestJS) | ai | 2 (active with `--ai standard` or `--ai deep`) |
 | 004 secure code, negative control | all | 0 |
 | 005 lodash advisories (npm) | sca | 1 |
 | 006 command injection (Flask) | sast | 0 |
@@ -23,6 +23,9 @@ the live OSV database. Run with `pnpm eval`.
 The secrets in case 007 are fabricated generic values. Provider-formatted tokens are avoided on
 purpose so pushing this repository does not trigger push protection.
 
-Thresholds stay at `phase: 1`: case 003 (IDOR) is detectable only by the AI investigation roles,
-which the evaluation runs with a scripted provider in CI. Run `pnpm spinxsca eval --ai standard
---ai-provider anthropic` with credentials to grade it with a real model.
+Thresholds are at `phase: 2`. Case 003 (IDOR) is detectable only by the AI roles, so it counts
+only when the suite runs with `--ai standard` or `--ai deep`; below that it is reported as pending.
+CI runs `pnpm spinxsca eval --suite internal --ai standard --ai-provider scripted`: the scripted
+provider derives the finding from the deterministic census (ADR-049) and never calls a model. Run
+`pnpm spinxsca eval --ai standard --ai-provider anthropic` with credentials to grade with a real
+model. Logic and authorization cases live in `evals/logic`.

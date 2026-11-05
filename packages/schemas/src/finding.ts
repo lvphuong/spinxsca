@@ -45,6 +45,7 @@ export const ReconciliationState = z.enum([
 export type ReconciliationState = z.infer<typeof ReconciliationState>;
 
 export const Classification = z.enum(['CONFIRMED', 'POTENTIAL', 'UNLIKELY', 'NOT_EVALUATED']);
+export type Classification = z.infer<typeof Classification>;
 export const Exploitability = z.enum(['CONFIRMED', 'POTENTIAL', 'UNLIKELY', 'UNKNOWN']);
 export const VerificationLevel = z.enum(['L1_STATIC', 'L2_CONTEXT', 'L3_CONTROLLED']);
 
@@ -149,6 +150,11 @@ export const FindingAssessment = z.object({
   applicability: Applicability.optional(),
   /** L3: outcome of a sandboxed proof of concept decided by the host oracle. */
   poc: PocResult.optional(),
+  /**
+   * Who first reported the occurrence: a deterministic scanner or an AI role (investigation, review).
+   * The gate treats AI-discovered findings by `gate.ai_discovered_min_classification` (ADR-050).
+   */
+  discoveredBy: z.enum(['scanner', 'ai']).optional(),
   assessedBy: z.string(),
   assessedAt: Timestamp,
 });

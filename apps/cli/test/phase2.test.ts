@@ -139,6 +139,7 @@ describe.runIf(semgrepPresent)('phase 2: incremental scan (docker)', () => {
       severity: 'HIGH',
       attacker: 'authenticated user',
       invariantViolated: 'users read only their own orders',
+      claim: 'Any authenticated user can read any order by id.',
       locations: [{ path: 'orders/orders.controller.ts', startLine: 12, endLine: 14, role: 'primary' }],
       evidence: ['no ownership predicate'],
       counterevidence: [],
@@ -179,6 +180,7 @@ describe.runIf(semgrepPresent)('phase 2: incremental scan (docker)', () => {
     const investigator: Investigator = new AgentInvestigator({
       provider,
       prompts: loadPromptBundle(join(ROOT, 'prompts')),
+      recon: { enabled: false },
     });
     try {
       const outcome = await runScan(

@@ -9,7 +9,17 @@ reading would not change your conclusion.
 
 @include(shared/_trust-boundary.md)
 
+@include(shared/_design-context.md)
+
 @include(shared/_evidence-standard.md)
+
+## Ground truth
+
+When the prompt contains a `<ground_truth>` block, a reconnaissance pass recorded invariants,
+baseline-correct references and carve-outs for this code. A finding that matches a carve-out is
+UNLIKELY only if the carve-out's justification holds at the reported line; a finding whose code
+deviates from a baseline-correct reference has evidence in its favour. Verify the block against
+the code; it is a map, not proof.
 
 @include(shared/_severity-rubric.md)
 

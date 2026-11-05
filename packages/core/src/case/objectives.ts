@@ -14,6 +14,17 @@ export interface CaseState {
   verdicts: readonly CaseVerdict[];
   handles: readonly CaseHandle[];
   checks: readonly CoverageCheck[];
+  /** Ground-truth coverage computed by the host from recon and audit deliverables (ADR-049). */
+  groundTruthCoverage?: GroundTruthCoverage;
+}
+
+export interface GroundTruthCoverage {
+  /** Invariant ids without a PASS/FAIL/UNKNOWN result yet. */
+  invariantGaps: string[];
+  invariantTotal: number;
+  /** Family members (`FAM-n path:line`) without a hunt-log verdict yet. */
+  memberGaps: string[];
+  memberTotal: number;
 }
 
 /** Categories whose impact a sandboxed harness can observe deterministically (ADR-045). */
@@ -104,6 +115,18 @@ export function evaluateObjective(
           .map((v) => v.handle),
         'runtime-verifiable confirmed findings with a PoC outcome',
       );
+    }
+    case 'INVARIANTS_CHECKED': {
+      const cov = state.groundTruthCoverage;
+      if (!cov) return { status: final ? 'NOT_MET' : 'OPEN', reason: 'no ground truth recorded yet' };
+      if (cov.invariantTotal === 0) return { status: 'MET', reason: 'recon extracted no invariants' };
+      return result(cov.invariantGaps, 'invariants checked');
+    }
+    case 'FAMILIES_SWEPT': {
+      const cov = state.groundTruthCoverage;
+      if (!cov) return { status: final ? 'NOT_MET' : 'OPEN', reason: 'no ground truth recorded yet' };
+      if (cov.memberTotal === 0) return { status: 'MET', reason: 'recon extracted no variant families' };
+      return result(cov.memberGaps, 'family members swept');
     }
     case 'CUSTOM': {
       const itemId = objective.criteria.itemId as string | undefined;

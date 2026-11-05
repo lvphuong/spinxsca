@@ -1,6 +1,35 @@
 import type { CaseVerdict, ReachabilityLevel, RunRef } from '@spinxsca/schemas';
 import type { ApplicabilityDeliverable, TriageDeliverable } from './deliverables';
 
+/**
+ * Deterministic backstop for the model contradicting itself (ADR-050, after Argo's
+ * `_reconcile_verdict_with_rationale`): a FALSE_POSITIVE whose rationale asserts the check is
+ * missing, or a HIGH-confidence TRUE_POSITIVE whose rationale admits it could not confirm a link.
+ * Conservative phrases only; the host never flips a verdict, it downgrades to BLOCKED and audits.
+ */
+const MISSING_CONTROL =
+  /\b(no|missing|without|lacks?|never|does not (perform|check|verify)|is not (checked|verified|enforced))\b[^.]{0,40}\b(ownership|owner|authorization|authorisation|tenant|permission|access)\b[^.]{0,20}\b(check|guard|filter|predicate|scope|control)?/i;
+const NEGATED_NEARBY = /\b(not|never|cannot|isn't|doesn't|does not|no longer|unlike)\b/i;
+const UNSURE =
+  /\b(could not (confirm|establish|locate|trace|verify)|unable to (confirm|establish|verify)|unclear whether|assum(e|ed|ing) that|not (sure|certain))\b/i;
+
+export function consistencyIssue(
+  d: Pick<TriageDeliverable, 'verdict' | 'confidence' | 'rationale'>,
+): string | undefined {
+  if (d.verdict === 'FALSE_POSITIVE') {
+    const m = MISSING_CONTROL.exec(d.rationale);
+    if (m) {
+      const before = d.rationale.slice(Math.max(0, m.index - 40), m.index);
+      if (!NEGATED_NEARBY.test(before)) return `verdict FALSE_POSITIVE but the rationale says "${m[0].trim()}"`;
+    }
+  }
+  if (d.verdict === 'TRUE_POSITIVE' && d.confidence === 'HIGH') {
+    const m = UNSURE.exec(d.rationale);
+    if (m) return `confidence HIGH but the rationale says "${m[0]}"`;
+  }
+  return undefined;
+}
+
 export function triageVerdict(caseId: string, d: TriageDeliverable, validator: RunRef, at: string): CaseVerdict {
   const classification =
     d.verdict === 'FALSE_POSITIVE'

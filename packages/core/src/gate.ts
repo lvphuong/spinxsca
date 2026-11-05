@@ -1,7 +1,7 @@
 import type { Finding, FindingAssessment, ScanRun, Severity } from '@spinxsca/schemas';
 import { severityAtLeast } from '@spinxsca/schemas';
 import { scansByBranch } from './branches';
-import { activeDispositions, gateView } from './policy';
+import { type AiDiscoveredMinClassification, activeDispositions, gateView } from './policy';
 import type { ScanRepository } from './ports';
 import { PRESENT_STATES } from './reconcile';
 
@@ -14,6 +14,8 @@ export interface ReleaseGatePolicy {
   maxKbAgeHours?: number;
   /** AI downgrades are ignored unless true (ADR-041). */
   trustAiDowngrades?: boolean;
+  /** AI-discovered findings block only at or above this classification (ADR-050; default CONFIRMED). */
+  aiDiscoveredMinClassification?: AiDiscoveredMinClassification;
 }
 
 export const DEFAULT_GATE_POLICY: ReleaseGatePolicy = {
@@ -114,7 +116,12 @@ export async function evaluateReleaseGate(
   for (const a of await repo.listAssessments(scan.scanId)) {
     if (!isOpen(a) || suppressed.has(a.findingId)) continue;
     const reasons: string[] = [];
-    const view = gateView(a, policy.trustAiDowngrades ?? false);
+    const view = gateView(a, {
+      trustAiDowngrades: policy.trustAiDowngrades ?? false,
+      ...(policy.aiDiscoveredMinClassification
+        ? { aiDiscoveredMinClassification: policy.aiDiscoveredMinClassification }
+        : {}),
+    });
     if (!view.exempt && severityAtLeast(view.severity, policy.failOnSeverity)) {
       reasons.push(
         view.severity === a.severity ? `severity ${a.severity}` : `severity ${view.severity} (AI: ${a.severity})`,

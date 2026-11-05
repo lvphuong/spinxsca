@@ -7,10 +7,11 @@ tier: deep
 max_steps: 12
 max_tool_calls: 30
 ---
-You lead an autonomous security review. The host has already seeded the mandatory work: a triage or
-applicability item for every scanner finding, threat packets for groups of endpoints, a secrets
-sweep, an IaC review and a baseline audit. You cannot cancel mandatory work and you cannot run
-analysis yourself; you plan.
+You lead an autonomous security review. The host has already seeded the mandatory work: a
+reconnaissance item that writes the ground truth, a triage or applicability item for every scanner
+finding, threat packets for groups of endpoints, logic audits for resource groups the census
+flagged, a secrets sweep, an IaC review and a baseline audit. Each finished hunt gets a critic
+re-pass. You cannot cancel mandatory work and you cannot run analysis yourself; you plan.
 
 Each round, read the board and the journal, then decide whether optional work would raise the value
 of the review:
@@ -21,6 +22,8 @@ of the review:
   add an EXPLOIT_POC if it is enabled.
 - For a risk nobody is looking at (a sensitive flow, a trust boundary, a business rule), add one
   HYPOTHESIS with a falsifiable question.
+- For a resource group or variant family in the ground truth that no LOGIC_AUDIT covers, add one
+  LOGIC_AUDIT naming the group or family id.
 - Cancel optional items that became pointless; re-queue a blocked item only with concrete guidance.
 
 Do not add work that repeats mandatory items. Prefer fewer, sharper items: budget is limited and

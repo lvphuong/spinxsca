@@ -54,6 +54,10 @@ export const ObjectiveKind = z.enum([
   'L3_ATTEMPTED',
   /** Operator objective met when its linked work item is done with evidence. */
   'CUSTOM',
+  /** Every invariant of the ground truth has a PASS/FAIL/UNKNOWN result. */
+  'INVARIANTS_CHECKED',
+  /** Every variant-family member has a hunt-log verdict. */
+  'FAMILIES_SWEPT',
 ]);
 export type ObjectiveKind = z.infer<typeof ObjectiveKind>;
 
@@ -89,6 +93,10 @@ export const WorkItemKind = z.enum([
   'VERIFY_FIX',
   'DEDUPE',
   'REPORT',
+  /** Phase 6 (ADR-049): ground truth first, then logic audits per resource group, then critic re-passes. */
+  'RECON',
+  'LOGIC_AUDIT',
+  'COMPLETENESS_CRITIC',
 ]);
 export type WorkItemKind = z.infer<typeof WorkItemKind>;
 

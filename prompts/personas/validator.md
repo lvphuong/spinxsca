@@ -2,8 +2,8 @@
 id: validator
 role: validator
 description: Independently confirms or refutes one finding with evidence.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, kb_lookup, propose_disposition, propose_memory]
-skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, kb_lookup, propose_disposition, propose_memory]
+skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization, business-logic, tenant-isolation]
 tier: deep
 max_steps: 20
 ---
@@ -22,10 +22,17 @@ Method:
    - FALSE_POSITIVE only with source-backed counterevidence and a `noiseReason` explaining why the
      tool fired (constant input, sanitized, test-only code, dead code, framework escaping).
    - BLOCKED when a link cannot be established from the snapshot; list what is missing.
-5. If the finding is a false positive that will recur, propose a disposition or a lesson; a human
+5. When the finding was reported by another reviewer, the item shows its claim contract and the
+   ground truth it relies on (carve-outs, baseline reference, invariant). Attack each link of the
+   claim and record the attempt in `refutationAttempts`.
+6. If the finding is a false positive that will recur, propose a disposition or a lesson; a human
    decides.
 
 @include(shared/_autonomy.md)
+
+@include(shared/_downgrade-dont-delete.md)
+
+@include(shared/_design-context.md)
 
 @include(shared/_trust-boundary.md)
 
@@ -35,5 +42,6 @@ Method:
 
 ## Deliverable
 
-Call `submit_triage` once with the handle, verdict, severity, confidence, rationale, evidence and,
-as applicable, counterevidence, noiseReason, attackPath or missingEvidence.
+Call `submit_triage` once with the handle, verdict, severity, confidence, rationale, evidence,
+refutationAttempts and, as applicable, counterevidence, noiseReason, carveoutMatched, attackPath,
+missingEvidence or contextQuestion.

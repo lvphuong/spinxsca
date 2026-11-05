@@ -62,6 +62,8 @@ export const TOOL_RISK: Readonly<Record<string, RiskClass>> = {
   kb_lookup: 'READ',
   deps_inventory: 'READ',
   deps_reachability: 'READ',
+  resource_matrix: 'READ',
+  data_access_sites: 'READ',
   load_skill: 'READ',
   explore: 'READ',
   // Case store writes.
@@ -90,6 +92,8 @@ export const TOOL_RISK: Readonly<Record<string, RiskClass>> = {
   request_objective_waiver: 'GOVERNANCE',
   request_standing_rule: 'GOVERNANCE',
   request_disposition: 'GOVERNANCE',
+  /** Host-emitted review question (ADR-051); never offered to a model, answered by a human in the inbox. */
+  request_context: 'GOVERNANCE',
   // Host-only actions; listed so that an agent naming them is denied by the floors.
   apply_patch: 'WRITE_REPO',
   set_disposition: 'GOVERNANCE',
@@ -246,6 +250,10 @@ export const AuditStage = z.enum([
   'memory.proposed',
   'memory.status',
   'objective.status',
+  // Phase 6 (ADR-050/051).
+  'verdict.overridden',
+  'context.asked',
+  'context.answered',
 ]);
 export type AuditStage = z.infer<typeof AuditStage>;
 

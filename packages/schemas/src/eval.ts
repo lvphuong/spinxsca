@@ -30,9 +30,15 @@ export const EvalCase = z.strictObject({
         /** For dependency findings: the advisory that must be reported (any alias matches). */
         vulnerability_id: z.string().optional(),
         notes: z.string().optional(),
+        /** Variant family the finding belongs to (sibling-sweep recall groups findings by family). */
+        family: z.string().optional(),
+        /** Expected only with a real model; pending under the scripted provider. */
+        live_only: z.boolean().default(false),
       }),
     )
     .default([]),
+  /** Operator context pack handed to the AI roles (ADR-051), as `ai.context` in spinxsca.yaml. */
+  ai_context: z.record(z.string(), z.unknown()).optional(),
   /** Regions where any reported finding is a false positive. */
   negatives: z
     .array(
@@ -51,6 +57,12 @@ export const EvalThresholds = z.strictObject({
   precision_min: z.number().min(0).max(1),
   recall_min: z.number().min(0).max(1),
   identity_stability_min: z.number().min(0).max(1),
+  /** AI level the suite is meant to run at; `ai`-only ground truth is pending below it. */
+  ai_level: z.enum(['off', 'explain', 'standard', 'deep']).optional(),
+  /** Fraction of variant families whose every member was reported (ADR-049). */
+  sibling_sweep_min: z.number().min(0).max(1).optional(),
+  /** Fraction of ground-truth invariants that received a PASS/FAIL/UNKNOWN result. */
+  invariant_coverage_min: z.number().min(0).max(1).optional(),
 });
 export type EvalThresholds = z.infer<typeof EvalThresholds>;
 

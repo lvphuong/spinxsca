@@ -1,0 +1,13 @@
+id: 102-authz-control-exists-nest
+title: Every order operation carries an ownership guard and a scoped query (NestJS)
+description: >-
+  Negative control for the logic roles: OwnershipGuard on each id-taking method and owner-scoped
+  Prisma queries. Any reported finding here is a false positive.
+languages: [typescript]
+source: src
+findings: []
+negatives:
+  - path: orders/orders.controller.ts
+    reason: every operation is guarded and scoped
+  - path: orders/orders.service.ts
+    reason: every query filters by ownerId

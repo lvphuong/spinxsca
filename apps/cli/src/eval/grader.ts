@@ -11,6 +11,15 @@ export interface ReportedFinding {
   endLine: number;
   /** Advisory ids and aliases for dependency findings. */
   vulnerabilityIds?: string[];
+  /** Scanners (or AI roles) that reported the finding; decides the `ai` layer. */
+  scanners?: string[];
+}
+
+export interface GradeOptions {
+  /** AI level the suite ran at; `ai`-only ground truth is pending below `standard`. */
+  aiLevel?: 'off' | 'explain' | 'standard' | 'deep';
+  /** Provider used; `live_only` ground truth is pending unless a real model ran. */
+  provider?: string;
 }
 
 type GroundTruth = EvalCase['findings'][number];
@@ -28,9 +37,18 @@ export interface CaseGrade {
  * the lines overlap within a small tolerance and the category or a CWE agrees. Each side matches at
  * most once; findings matching pending ground truth are neither true nor false positives.
  */
-export function gradeCase(evalCase: EvalCase, findings: readonly ReportedFinding[], phase: number): CaseGrade {
-  const active = evalCase.findings.filter((g) => g.min_phase <= phase);
-  const pending = evalCase.findings.filter((g) => g.min_phase > phase);
+export function gradeCase(
+  evalCase: EvalCase,
+  findings: readonly ReportedFinding[],
+  phase: number,
+  options: GradeOptions = {},
+): CaseGrade {
+  const aiRan = options.aiLevel === 'standard' || options.aiLevel === 'deep';
+  const liveModel = Boolean(options.provider) && options.provider !== 'scripted' && aiRan;
+  const isActive = (g: GroundTruth) =>
+    g.min_phase <= phase && (aiRan || g.detectable_by.some((l) => l !== 'ai')) && (liveModel || !g.live_only);
+  const active = evalCase.findings.filter(isActive);
+  const pending = evalCase.findings.filter((g) => !isActive(g));
   const grade: CaseGrade = { truePositives: [], falsePositives: [], falseNegatives: [], pending };
   const usedFindings = new Set<string>();
 
@@ -65,6 +83,7 @@ export function truthLayer(truth: GroundTruth): DetectionLayer {
 
 /** Layer that produced a reported finding, from its category. */
 export function findingLayer(finding: ReportedFinding): DetectionLayer {
+  if (finding.scanners?.length && finding.scanners.every((s) => s === 'ai' || s.startsWith('ai-'))) return 'ai';
   if (finding.category === 'VULNERABLE_DEPENDENCY') return 'sca';
   if (finding.category === 'HARDCODED_SECRET') return 'secrets';
   if (finding.category === 'INSECURE_CONFIGURATION') return 'iac';

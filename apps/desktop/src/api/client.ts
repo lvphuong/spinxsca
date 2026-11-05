@@ -1,5 +1,5 @@
 import { SseParser } from '../lib/sse';
-import type { ApprovalRecord, CaseView, Project, ReviewCase } from './types';
+import type { ApprovalRecord, CaseView, JobEntry, Project, ReviewCase } from './types';
 
 /** Connection to the local sidecar, injected by the desktop shell before the page loads. */
 export interface Connection {
@@ -41,9 +41,13 @@ export class ApiClient {
   }
 
   health = () => this.call<{ status: string }>('GET', '/v1/health');
-  projects = async () => (await this.call<{ projects: Project[] }>('GET', '/v1/projects')).projects;
+  /** The server answers with a bare array (older builds wrapped it in `{ projects }`). */
+  projects = async () => {
+    const body = await this.call<Project[] | { projects?: Project[] }>('GET', '/v1/projects');
+    return Array.isArray(body) ? body : (body.projects ?? []);
+  };
   createProject = (input: { name: string; path: string }) =>
-    this.call<{ project: Project }>('POST', '/v1/projects', {
+    this.call<Project>('POST', '/v1/projects', {
       name: input.name,
       source: { kind: 'local', path: input.path },
     });
@@ -51,6 +55,8 @@ export class ApiClient {
     this.call('PUT', `/v1/projects/${encodeURIComponent(projectId)}/ai`, ai);
   startReview = (projectId: string, input: { branch: string; goal?: string; objectives?: string[] }) =>
     this.call<{ job: { jobId: string } }>('POST', `/v1/projects/${encodeURIComponent(projectId)}/reviews`, input);
+  projectJobs = (projectId: string) =>
+    this.call<JobEntry[]>('GET', `/v1/projects/${encodeURIComponent(projectId)}/jobs`);
   cases = async (projectId: string) =>
     (await this.call<{ cases: ReviewCase[] }>('GET', `/v1/projects/${encodeURIComponent(projectId)}/cases`)).cases;
   caseView = (projectId: string, caseId: string) =>

@@ -30,10 +30,11 @@ export async function evalCommand(options: EvalCommandOptions): Promise<number> 
     ...(options.case?.length ? { caseIds: options.case } : {}),
     stability: options.stability !== false,
     logger: createLogger(Boolean(options.verbose)),
-    ...(options.ai === 'explain'
+    ...(options.ai && options.ai !== 'off'
       ? {
+          aiLevel: options.ai as 'explain' | 'standard' | 'deep',
           ai: {
-            provider: (options.aiProvider ?? 'scripted') as 'anthropic' | 'scripted',
+            provider: (options.aiProvider ?? 'scripted') as 'anthropic' | 'openai-compatible' | 'scripted',
             effort: 'high' as const,
             refusalFallback: 'default' as const,
             maxCostUsdPerFinding: 2,

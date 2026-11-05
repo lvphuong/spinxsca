@@ -141,6 +141,7 @@ rows:
   - { id: l6-objective-waiver, tool: request_objective_waiver, expect: "ask L6 human_only" }
   - { id: l6-standing-rule, tool: request_standing_rule, expect: "ask L6 human_only" }
   - { id: l6-disposition, tool: request_disposition, targets: ["handle:CF-1"], expect: "ask L6 human_only" }
+  - { id: l6-context-question, tool: request_context, targets: ["store:memory"], expect: "ask L6 human_only" }
   - { id: l6-auto-allow-ignored, tool: request_apply, targets: ["workspace_path:ws1"], auto_allow: [request_apply], expect: "ask L6 human_only" }
   - { id: l6-case-grant-ignored, tool: request_apply, targets: ["workspace_path:ws1"], grants: [{ scope: case, tool: request_apply, risk: WRITE_REPO }], expect: "ask L6 human_only" }
   - { id: l6-standing-rule-ignored, tool: request_pr, grants: [{ scope: standing, tool: request_pr, risk: EXTERNAL }], expect: "ask L6 human_only" }
@@ -155,6 +156,8 @@ rows:
   - { id: l7-kb-lookup, tool: kb_lookup, expect: "allow L7" }
   - { id: l7-deps-inventory, tool: deps_inventory, expect: "allow L7" }
   - { id: l7-deps-reachability, tool: deps_reachability, expect: "allow L7" }
+  - { id: l7-resource-matrix, tool: resource_matrix, expect: "allow L7" }
+  - { id: l7-data-access-sites, tool: data_access_sites, expect: "allow L7" }
   - { id: l7-explore, tool: explore, expect: "allow L7" }
   - { id: l7-load-skill, tool: load_skill, expect: "allow L7" }
   - { id: l7-journal-record, tool: journal_record, expect: "allow L7" }

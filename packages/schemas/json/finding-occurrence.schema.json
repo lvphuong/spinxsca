@@ -69,6 +69,38 @@
     "fingerprint": {
       "type": "string"
     },
+    "anchor": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string"
+        },
+        "instance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "path",
+        "symbol",
+        "shape",
+        "instance"
+      ]
+    },
+    "ruleIds": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "candidateIds": {
       "minItems": 1,
       "type": "array",
@@ -90,6 +122,8 @@
     "snapshotId",
     "locations",
     "fingerprint",
+    "anchor",
+    "ruleIds",
     "candidateIds",
     "evidenceIds"
   ]

@@ -25,6 +25,7 @@ export function gatePolicy(
     ...(gate?.epss_threshold !== undefined ? { epssThreshold: gate.epss_threshold } : {}),
     ...(gate?.max_kb_age_hours !== undefined ? { maxKbAgeHours: gate.max_kb_age_hours } : {}),
     trustAiDowngrades: gate?.trust_ai_downgrades ?? false,
+    aiDiscoveredMinClassification: gate?.ai_discovered_min_classification ?? 'CONFIRMED',
   };
   if (overrides.maxScanAge) policy.maxScanAgeHours = parseHours(overrides.maxScanAge);
   if (overrides.failOn) policy.failOnSeverity = parseSeverity(overrides.failOn);

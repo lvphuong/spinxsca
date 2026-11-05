@@ -69,6 +69,41 @@ const ValidationConfig = z.strictObject({
   memory_mb: z.number().int().min(256).max(8192).default(1024),
 });
 
+/** Recon-first analysis for `--ai standard` and `--ai deep` (ADR-049). */
+const ReconConfig = z.strictObject({
+  enabled: z.boolean().default(true),
+  /** Completeness re-passes per packet or logic item; 0 disables the critic. */
+  critic_passes: z.number().int().min(0).max(2).default(1),
+  /** Upper bound of LOGIC_AUDIT items seeded in a deep review case. */
+  max_logic_items: z.number().int().min(1).max(16).default(8),
+  /** Inject the deterministic resource/data-access census worksheet into prompts. */
+  census: z.boolean().default(true),
+  /** Blind second-opinion passes (hook only; values above 0 are not supported yet). */
+  second_opinion: z.literal(0).default(0),
+});
+
+const Provenance = z.string().min(1).max(200);
+/** Operator context pack (ADR-051): statements the source cannot establish, each with provenance. */
+export const AiContextConfig = z.strictObject({
+  /** Intended behaviours a naive reviewer would flag; become operator carve-outs. */
+  accepted_risks: z.array(z.string().min(10).max(600)).max(30).default([]),
+  roles: z
+    .array(
+      z.strictObject({ name: z.string().min(1).max(80), trust: z.string().min(1).max(400), provenance: Provenance }),
+    )
+    .max(20)
+    .default([]),
+  trust_claims: z
+    .array(z.strictObject({ statement: z.string().min(1).max(400), provenance: Provenance }))
+    .max(30)
+    .default([]),
+  business_invariants: z
+    .array(z.strictObject({ statement: z.string().min(1).max(400), provenance: Provenance }))
+    .max(30)
+    .default([]),
+});
+export type AiContextConfig = z.infer<typeof AiContextConfig>;
+
 const RemediationConfig = z.strictObject({
   enabled: z.boolean().default(false),
   max_iterations: z.number().int().min(1).max(5).default(3),
@@ -152,6 +187,10 @@ export const SpinxscaConfig = z.strictObject({
       max_findings: z.number().int().positive().default(20),
       /** Redacted code excerpts are sent to the model only when this is true. */
       send_source_snippets: z.boolean().default(true),
+      /** Recon-first logic analysis (ADR-049): ground truth before hunting, critic re-passes, census. */
+      recon: ReconConfig.optional(),
+      /** Operator-provided business context with provenance (ADR-051); claims are rechecked, never proof. */
+      context: AiContextConfig.optional(),
       autonomy: AutonomyConfig.optional(),
       validation: ValidationConfig.optional(),
       remediation: RemediationConfig.optional(),
@@ -184,11 +223,19 @@ export const SpinxscaConfig = z.strictObject({
        * disposition is needed to clear a finding (ADR-041).
        */
       trust_ai_downgrades: z.boolean().default(false),
+      /**
+       * Findings first reported by an AI role (not by a scanner) block the gate only when their
+       * classification is at least this (ADR-050). CONFIRMED keeps the Phase 5 posture of not
+       * trusting a model's word alone; POTENTIAL lets validated-but-uncertain logic findings block.
+       */
+      ai_discovered_min_classification: z.enum(['CONFIRMED', 'POTENTIAL']).default('CONFIRMED'),
     })
     .optional(),
   output: z
     .strictObject({
       formats: z.array(z.enum(['sarif', 'md', 'json'])).default(['sarif', 'md', 'json']),
+      /** Include AI-discovered findings that are still POTENTIAL/BLOCKED in SARIF (they always appear in md/json). */
+      sarif_include_unverified_ai: z.boolean().default(false),
     })
     .optional(),
 });

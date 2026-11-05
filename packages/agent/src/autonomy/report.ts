@@ -4,6 +4,7 @@ import type {
   CaseLedger,
   CaseVerdict,
   CoverageCheck,
+  GroundTruth,
   Objective,
   ReviewCase,
   WorkItem,
@@ -19,6 +20,10 @@ export function caseReport(o: {
   checks: readonly CoverageCheck[];
   ledger: CaseLedger;
   pendingApprovals: number;
+  /** Ground truth written by the recon item (ADR-049). */
+  groundTruth?: GroundTruth;
+  /** Review questions waiting for a human (ADR-051): id and question only. */
+  openQuestions?: ReadonlyArray<{ id: string; question: string }>;
 }): string {
   const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
   const latest = latestVerdicts(o.verdicts);
@@ -56,5 +61,16 @@ export function caseReport(o: {
     '',
     '## Coverage',
     ...o.checks.map((c) => `- ${c.checkId}: ${c.outcome}${c.reason ? ` — ${c.reason}` : ''}`),
+    ...(o.groundTruth
+      ? [
+          '',
+          '## Ground truth',
+          `Archetype: ${o.groundTruth.archetype}${o.groundTruth.archetypeNote ? ` (${esc(o.groundTruth.archetypeNote)})` : ''} · ${o.groundTruth.invariants.length} invariants · ${o.groundTruth.baselines.length} baseline references · ${o.groundTruth.families.length} variant families (${o.groundTruth.families.reduce((n, f) => n + f.members.length, 0)} members) · ${o.groundTruth.carveouts.length} carve-outs`,
+          ...o.groundTruth.residualUnknowns.map((u) => `- ${u.unknownId} [${u.kind}] ${esc(u.question)}`),
+        ]
+      : []),
+    ...(o.openQuestions?.length
+      ? ['', '## Open questions', ...o.openQuestions.map((q) => `- ${q.id}: ${esc(q.question)}`)]
+      : []),
   ].join('\n');
 }

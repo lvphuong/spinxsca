@@ -9,12 +9,14 @@ import {
   type LlmProvider,
   loadPromptBundle,
   OpenAICompatibleProvider,
+  type ReconOptions,
   scriptedExplainProvider,
-  scriptedInvestigationProvider,
+  scriptedLogicProvider,
   scriptedRemediationProvider,
   withDataPolicy,
 } from '@spinxsca/agent';
 import type { FindingExplainer, Investigator, ProjectAssistant, Remediator } from '@spinxsca/core';
+import type { AiContextConfig } from '@spinxsca/schemas';
 import { resolvePromptsDir } from './rules';
 import { CliError } from './ui';
 
@@ -29,6 +31,10 @@ export interface AiExplainOptions {
   effort: Effort;
   refusalFallback: 'default' | 'off';
   maxCostUsdPerFinding: number;
+  /** Recon-first investigation settings (`ai.recon`, ADR-049). */
+  recon?: ReconOptions;
+  /** Operator context pack (`ai.context` or `--context-pack`, ADR-051). */
+  context?: AiContextConfig;
 }
 
 /** Builds the AI roles for a provider. Credentials are resolved by the SDK (env or `ant auth login`). */
@@ -49,7 +55,7 @@ export function createAi(options: AiExplainOptions): AiRoles {
   let remediationProvider: () => LlmProvider;
   if (options.provider === 'scripted') {
     provider = scriptedExplainProvider;
-    investigationProvider = scriptedInvestigationProvider;
+    investigationProvider = scriptedLogicProvider;
     remediationProvider = () =>
       scriptedRemediationProvider({
         replacement: scriptedRemediation.replacement ?? '',
@@ -105,7 +111,13 @@ export function createAi(options: AiExplainOptions): AiRoles {
       policy,
     ),
     investigator: withDataPolicy(
-      new AgentInvestigator({ provider: investigationProvider, prompts, effort: options.effort }),
+      new AgentInvestigator({
+        provider: investigationProvider,
+        prompts,
+        effort: options.effort,
+        ...(options.recon ? { recon: options.recon } : {}),
+        ...(options.context ? { context: options.context } : {}),
+      }),
       policy,
     ),
     remediator: withDataPolicy(

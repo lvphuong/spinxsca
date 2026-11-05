@@ -1,11 +1,13 @@
 import { join } from 'node:path';
 import type {
+  AiContextConfig,
   CaseVerdict,
   Coverage,
   Evidence,
   Finding,
   FindingAssessment,
   FindingCandidate,
+  GroundTruth,
   Location,
   ScanMode,
   ScanRun,
@@ -16,7 +18,9 @@ import type {
 } from '@spinxsca/schemas';
 import { familyOf, Location as LocationSchema, SEVERITY_RANK } from '@spinxsca/schemas';
 import { type Activity, runActivity } from '../activity';
+import { isAiScanner } from '../ai-origin';
 import { latestScanOnBranch } from '../branches';
+import type { GroundTruthCoverage } from '../case/objectives';
 import { buildCauseAttributor } from '../causes';
 import { buildCoverageOracle, type TaskCoverage } from '../coverage';
 import { errorMessage, SpinxscaError, throwIfAborted } from '../errors';
@@ -78,6 +82,8 @@ export interface AiScanOptions {
   level: 'off' | 'explain' | 'standard' | 'deep';
   maxFindings: number;
   maxCostUsd: number;
+  /** Operator context pack (ADR-051), handed to the AI roles as claims to recheck. */
+  context?: AiContextConfig;
 }
 
 export interface ScanRequest {
@@ -123,6 +129,12 @@ export interface ScanOutcome {
     failures: string[];
     /** Autonomous review case of this scan (deep level). */
     review?: { caseId: string; status: string; verdicts: number; applied: number };
+    /** Sessions that failed for infrastructure reasons (not detection-quality signals). */
+    infraFailures?: string[];
+    /** Ground-truth coverage of the recon-first investigation (ADR-049). */
+    coverage?: GroundTruthCoverage;
+    /** Artifact digest of the ground truth extracted by recon. */
+    groundTruthDigest?: string;
   };
 }
 
@@ -179,7 +191,10 @@ interface InvestigationOutput {
   drafts: CandidateDraft[];
   costUsd: number;
   deferred: string[];
+  infraFailures: string[];
   runIds: string[];
+  groundTruth?: GroundTruth;
+  coverage?: GroundTruthCoverage;
 }
 const investigationActivity: Activity<
   { identity: Record<string, unknown>; run: () => Promise<InvestigationOutput> },
@@ -503,7 +518,14 @@ async function executeScan(
 
   // 4. AI investigation (standard level): planner, investigators and baseline auditor produce drafts
   //    that are normalized like scanner output and reconciled with it (ADR-024).
-  const aiStats = { investigated: 0, explained: 0, skipped: 0, costUsd: 0, failures: [] as string[] };
+  const aiStats: NonNullable<ScanOutcome['ai']> = {
+    investigated: 0,
+    explained: 0,
+    skipped: 0,
+    costUsd: 0,
+    failures: [],
+  };
+  let groundTruth: GroundTruth | undefined;
   let aiRan = false;
   const scannerDrafts = scannerOutputs.flatMap((o) => o.output?.drafts ?? []);
   const redactionsEarly = secretSpans(scannerDrafts);
@@ -530,6 +552,7 @@ async function executeScan(
               ? { focus: { files: impact.scope, endpointIds: impact.affectedEndpoints.map((e) => e.id) } }
               : {}),
             redactions: redactionsEarly,
+            ...(options.context ? { context: options.context } : {}),
           },
           deps.source,
           {
@@ -543,7 +566,10 @@ async function executeScan(
           drafts: outcome.drafts,
           costUsd: outcome.costUsd,
           deferred: outcome.deferred,
+          infraFailures: outcome.infraFailures ?? [],
           runIds: outcome.runs.map((r) => r.agentRunId),
+          ...(outcome.groundTruth ? { groundTruth: outcome.groundTruth } : {}),
+          ...(outcome.coverage ? { coverage: outcome.coverage } : {}),
         };
       },
     });
@@ -551,6 +577,13 @@ async function executeScan(
       aiStats.costUsd += result.output.costUsd;
       aiStats.investigated = result.output.drafts.length;
       if (result.output.deferred.length) aiStats.failures.push(`deferred: ${result.output.deferred.join('; ')}`);
+      if (result.output.infraFailures.length) aiStats.infraFailures = result.output.infraFailures;
+      if (result.output.coverage) aiStats.coverage = result.output.coverage;
+      groundTruth = result.output.groundTruth;
+      if (groundTruth) {
+        const ref = await artifacts.put(JSON.stringify(groundTruth), 'application/json');
+        aiStats.groundTruthDigest = ref.digest;
+      }
       scannerOutputs.push({ task: result.task, output: { drafts: result.output.drafts, rawArtifacts: {} } });
     } else aiStats.failures.push(`investigation: ${result.task.error ?? result.task.status}`);
   }
@@ -687,7 +720,17 @@ async function executeScan(
       );
     }
     if (request.ai && request.ai.level !== 'off' && request.ai.level !== 'deep' && deps.explainer) {
-      const explained = await explainNewFindings(deps, request, scan, result, candidates, files, redactions, progress);
+      const explained = await explainNewFindings(
+        deps,
+        request,
+        scan,
+        result,
+        candidates,
+        files,
+        redactions,
+        progress,
+        groundTruth,
+      );
       aiStats.explained = explained.explained;
       aiStats.skipped = explained.skipped;
       aiStats.costUsd += explained.costUsd;
@@ -751,6 +794,7 @@ async function explainNewFindings(
   files: readonly SnapshotFile[],
   redactions: readonly Location[],
   progress: (event: ScanProgress) => void,
+  groundTruth?: GroundTruth,
 ): Promise<{ explained: number; skipped: number; costUsd: number; failures: string[] }> {
   const explainer = deps.explainer as FindingExplainer;
   const options = request.ai as AiScanOptions;
@@ -817,6 +861,8 @@ async function explainNewFindings(
         snapshotPaths,
         related: related.filter((r) => r.findingId !== target.finding.findingId),
         redactions,
+        ...(groundTruth ? { groundTruth } : {}),
+        ...(options.context ? { context: options.context } : {}),
       };
       try {
         const outcome = await explainer.explain(subject, deps.source, request.signal);
@@ -1017,7 +1063,7 @@ async function buildCandidates(
             fileText: await readFile(primary.path),
           });
       // AI drafts (investigation, review, probes) group with scanner output by category family.
-      const ruleFamily = draft.scanner.startsWith('ai') ? familyOf(draft.category) : draft.ruleFamily;
+      const ruleFamily = isAiScanner(draft.scanner) ? familyOf(draft.category) : draft.ruleFamily;
       const key = [draft.category, ruleFamily, base.path, base.symbol, base.shape, draft.ruleId].join('|');
       pending.push({
         draft: { ...draft, ruleFamily, locations },
@@ -1032,9 +1078,10 @@ async function buildCandidates(
   // Dedupe stage 1 (host): an AI finding overlapping a scanner finding of the same category takes the
   // scanner's anchor so both reconcile into one occurrence with the scanner candidate as primary.
   for (const item of pending) {
-    if (item.draft.scanner !== 'ai') continue;
+    if (!isAiScanner(item.draft.scanner)) continue;
     const match = pending.find(
-      (p) => p.draft.scanner !== 'ai' && p.draft.category === item.draft.category && overlaps(p.primary, item.primary),
+      (p) =>
+        !isAiScanner(p.draft.scanner) && p.draft.category === item.draft.category && overlaps(p.primary, item.primary),
     );
     if (match) {
       item.base = match.base;

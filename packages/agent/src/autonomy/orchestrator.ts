@@ -1,6 +1,8 @@
 import {
   type AutonomousReviewer,
   applyRedactions,
+  askContextQuestions,
+  buildResourceMatrix,
   type CandidateDraft,
   type CaseRepository,
   checkIndependence,
@@ -11,6 +13,7 @@ import {
   initialMemoryStatus,
   moveItem,
   quotaOf,
+  type ResourceMatrix,
   type ReviewOutcome,
   type ReviewSubject,
   readyItems,
@@ -32,6 +35,7 @@ import {
 } from '@spinxsca/governance';
 import type {
   AgentRunRecord,
+  AiContextConfig,
   AutonomyMode,
   CaseHandle,
   CaseStatus,
@@ -46,6 +50,9 @@ import type {
   WorkItem,
   WorkItemKind,
 } from '@spinxsca/schemas';
+import { GroundTruth } from '@spinxsca/schemas';
+
+import { acceptedRisksVar, coverageOf, mergeOperatorContext, renderOperatorContext } from '../ground-truth';
 import { providerJudge } from '../llm/judge';
 import { costOf } from '../llm/pricing';
 import type { Effort, LlmProvider, Usage } from '../llm/types';
@@ -67,8 +74,8 @@ import { createSecurityTools } from '../tools/security-tools';
 import { createValidationTools } from '../tools/validation-tools';
 import { approverChain, type HumanApprover } from './approvers';
 import { createBoardTools, summarizeBoard } from './board-tools';
-import { isIacFile, seedBoard } from './conductor';
-import { itemPrompt, leadPrompt, ORACLE_FOR_CATEGORY, ORACLE_GUIDE } from './context';
+import { isIacFile, logicItemSlug, RECON_ITEM, seedBoard } from './conductor';
+import { itemPrompt, leadPrompt, ORACLE_FOR_CATEGORY, ORACLE_GUIDE, sliceForItem } from './context';
 import { decideStop } from './convergence';
 import { duplicateGroups } from './dedupe';
 import {
@@ -81,7 +88,7 @@ import {
   type TriageDeliverable,
 } from './deliverables';
 import { FixReviewDeliverable, fixReviewPrompt, type RemediationOutcome, type RemediationTarget } from './remediation';
-import { applicabilityVerdict, triageVerdict } from './verdicts';
+import { applicabilityVerdict, consistencyIssue, triageVerdict } from './verdicts';
 
 export const AUTONOMY_POLICY_VERSION = 'autonomy-v1';
 
@@ -109,6 +116,10 @@ export interface AutonomyConfig {
   pricing?: Readonly<Record<string, PriceOverride>>;
   /** Operator-owned host paths (config file, knowledge base, rule dirs, prompts). */
   protectedRoots: readonly string[];
+  /** Recon-first flow (ADR-049). Absent: Phase 5 board without RECON, LOGIC_AUDIT or critics. */
+  recon?: { enabled: boolean; criticPasses: number; maxLogicItems: number; census: boolean };
+  /** Operator context pack (ADR-051). */
+  context?: AiContextConfig;
 }
 
 export interface CaseEvent {
@@ -147,6 +158,24 @@ const WORKER_KINDS: ReadonlySet<WorkItemKind> = new Set([
   'VARIANT_HUNT',
   'EXPLOIT_POC',
   'REVIEW_POC',
+  'RECON',
+  'LOGIC_AUDIT',
+  'COMPLETENESS_CRITIC',
+]);
+
+/** Kinds whose deliverable is a FindingsDeliverable and that get a completeness critic (ADR-049). */
+const CRITIQUED_KINDS: ReadonlySet<WorkItemKind> = new Set([
+  'THREAT_PACKET',
+  'LOGIC_AUDIT',
+  'HYPOTHESIS',
+  'VARIANT_HUNT',
+]);
+const FINDINGS_KINDS: ReadonlySet<WorkItemKind> = new Set([
+  ...CRITIQUED_KINDS,
+  'COMPLETENESS_CRITIC',
+  'BASELINE_AUDIT',
+  'SECRETS_SWEEP',
+  'IAC_REVIEW',
 ]);
 
 interface CaseRuntime {
@@ -165,6 +194,11 @@ interface CaseRuntime {
   reviewerBreaker: ConsecutiveBreaker;
   exploreLimit: Semaphore;
   historySummary?: string;
+  /** Ground truth once the RECON item is done (merged with the operator context). */
+  groundTruth?: GroundTruth;
+  matrix?: ResourceMatrix;
+  /** Item that produced each agent handle (not persisted; a resumed case lists every agent handle). */
+  handleItems: Map<string, string>;
 }
 
 /**
@@ -265,7 +299,13 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       deferred: [],
       reviewerBreaker: new ConsecutiveBreaker(5),
       exploreLimit: new Semaphore(3),
+      handleItems: new Map(),
     };
+    const recon = this.o.config.recon;
+    if (recon?.enabled && recon.census && subject.graph) {
+      rt.matrix = await buildResourceMatrix(subject.graph, source, subject.snapshotPaths);
+    }
+    rt.groundTruth = await this.loadGroundTruth(rt);
 
     const created: CaseHandle[] = [];
     for (const draft of subject.scannerDrafts) {
@@ -290,6 +330,14 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
         iacFiles: subject.snapshotPaths.filter(isIacFile),
         l3: this.o.config.l3,
         objectives: this.o.objectives ?? [],
+        ...(recon?.enabled
+          ? {
+              recon: true,
+              maxLogicItems: recon.maxLogicItems,
+              ...(rt.matrix ? { matrix: rt.matrix } : {}),
+              operatorContext: renderOperatorContext(this.o.config.context),
+            }
+          : {}),
       });
       for (const item of items) await cases.saveWorkItem(item);
       await cases.saveObjectives(objectives);
@@ -384,6 +432,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
     const creatable: WorkItemKind[] = [
       'HYPOTHESIS',
       'VARIANT_HUNT',
+      ...(this.o.config.recon?.enabled ? (['LOGIC_AUDIT'] as const) : []),
       ...(this.o.config.l3 ? (['EXPLOIT_POC'] as const) : []),
       ...(this.o.config.remediation ? (['FIX'] as const) : []),
     ];
@@ -452,12 +501,18 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       message: `${persona.manifest.id}: ${item.title}`,
       data: { itemId: item.itemId },
     });
+    const itemHandles = item.handles.map((h) => rt.handles.get(h));
+    const triagedClaim = (itemHandles[0]?.draft as CandidateDraft | undefined)?.claim;
     const submit = submitFor(item.kind, {
       source: rt.source,
       paths: rt.subject.snapshotPaths,
       ...(rt.subject.ports.dependencies ? { dependencies: rt.subject.ports.dependencies } : {}),
       packageOf: (h) => this.packageOf(rt.handles.get(h)),
       ...(rt.subject.ports.validation ? { validation: rt.subject.ports.validation } : {}),
+      ...(rt.groundTruth
+        ? { groundTruth: rt.groundTruth, slice: sliceForItem(rt.groundTruth, item, itemHandles) }
+        : {}),
+      ...(item.kind === 'TRIAGE_FINDING' && triagedClaim ? { claim: triagedClaim } : {}),
     });
     let extra = '';
     if (item.kind === 'EXPLOIT_POC') {
@@ -548,13 +603,48 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       return undefined;
     }
     if (item.kind === 'TRIAGE_FINDING') {
-      const d = output as TriageDeliverable;
+      let d = output as TriageDeliverable;
       if (!item.handles.includes(d.handle))
         throw new Error(`the deliverable is about ${d.handle}, not ${item.handles.join(', ')}`);
       checkIndependence(rt.handles.get(d.handle)?.producer, by);
+      // Downgrade-don't-delete backstop (ADR-050): a self-contradicting verdict is held, never flipped.
+      const issue = consistencyIssue(d);
+      if (issue) {
+        const original = d.verdict;
+        d = {
+          ...d,
+          verdict: 'BLOCKED',
+          confidence: 'LOW',
+          missingEvidence: [`host consistency check: ${issue}`, ...d.missingEvidence].slice(0, 8),
+        };
+        await this.audit(rt.cases, rt.rc.caseId, 'verdict.overridden', {
+          handle: d.handle,
+          from: original,
+          to: 'BLOCKED',
+          reason: issue,
+          validator: by,
+        });
+        await rt.cases.appendJournal({
+          caseId: rt.rc.caseId,
+          kind: 'DECISION',
+          author: 'host',
+          itemId: item.itemId,
+          handles: [d.handle],
+          refs: [],
+          text: `Verdict ${original} for ${d.handle} held as BLOCKED by the host: ${issue}`,
+        });
+      }
       await this.recordVerdict(rt, triageVerdict(rt.rc.caseId, d, by, at), item);
       if (d.verdict === 'FALSE_POSITIVE' && d.noiseReason) await this.rememberNoise(rt, d, by);
       return undefined;
+    }
+    if (item.kind === 'RECON') {
+      await this.acceptRecon(rt, item, output as ReconDeliverableLike, by);
+      return undefined;
+    }
+    if (item.kind === 'COMPLETENESS_CRITIC' && item.subjectItemId) {
+      const subject = await rt.cases.getWorkItem(item.subjectItemId);
+      checkIndependence(subject?.producer, by);
     }
     if (item.kind === 'DEPENDENCY_APPLICABILITY') {
       const d = output as ApplicabilityDeliverable;
@@ -590,12 +680,24 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       category: f.category,
       cwe: f.cwe,
       title: f.title,
-      message: f.summary,
+      message: `${f.summary} Claim: ${f.claim}${f.proofObligations.length ? ` Proof obligations: ${f.proofObligations.join('; ')}` : ''}`,
       severityHint: f.severity,
       confidenceHint: f.confidence,
       locations: f.locations.map((l) => ({ ...l, role: l.role })),
+      claim: {
+        claim: f.claim,
+        preconditions: f.preconditions,
+        capabilitiesGained: f.capabilitiesGained,
+        proofObligations: f.proofObligations,
+        threatModelClass: f.threatModelClass,
+        ...(f.baselineReference ? { baselineReference: f.baselineReference } : {}),
+        ...(f.invariantId ? { invariantId: f.invariantId } : {}),
+        ...(f.familyId ? { familyId: f.familyId } : {}),
+        ...(f.sourcePass ? { sourcePass: f.sourcePass } : {}),
+      },
     }));
-    await this.registerDrafts(rt, drafts, by);
+    const registered = await this.registerDrafts(rt, drafts, by, item.itemId);
+    await this.maybeSeedCritic(rt, item, registered.created.length);
     for (const gap of d.deferred) {
       await rt.cases.appendJournal({
         caseId: rt.rc.caseId,
@@ -825,7 +927,12 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
   }
 
   /** New agent findings become handles with their producer and a mandatory independent triage. */
-  private async registerDrafts(rt: CaseRuntime, drafts: CandidateDraft[], producer: RunRef): Promise<string[]> {
+  private async registerDrafts(
+    rt: CaseRuntime,
+    drafts: CandidateDraft[],
+    producer: RunRef,
+    itemId?: string,
+  ): Promise<{ handles: string[]; created: CaseHandle[] }> {
     const created: CaseHandle[] = [];
     const handles: string[] = [];
     for (const draft of drafts) {
@@ -836,6 +943,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       }
       const r = rt.handles.assign({ ...draft, locations: locs }, 'agent', producer);
       handles.push(r.handle.handle);
+      if (itemId) rt.handleItems.set(r.handle.handle, itemId);
       if (r.created) created.push(r.handle);
     }
     await rt.cases.saveHandles(created);
@@ -859,7 +967,148 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
         updatedAt: at,
       });
     }
-    return handles;
+    return { handles, created };
+  }
+
+  /** The RECON deliverable becomes the case's ground truth; uncovered families get logic audits (ADR-049). */
+  private async acceptRecon(rt: CaseRuntime, item: WorkItem, d: ReconDeliverableLike, by: RunRef): Promise<void> {
+    const gt = mergeOperatorContext(GroundTruth.parse(d.groundTruth), this.o.config.context);
+    rt.groundTruth = gt;
+    const author = `${by.persona}/${by.runId}`;
+    await rt.cases.appendJournal({
+      caseId: rt.rc.caseId,
+      kind: 'OBSERVATION',
+      author,
+      itemId: item.itemId,
+      handles: [],
+      refs: [],
+      text: subjectScrub(
+        rt,
+        `Recon: archetype ${gt.archetype}${gt.archetypeNote ? ` (${gt.archetypeNote})` : ''}; ${gt.invariants.length} invariants, ${gt.baselines.length} baseline references, ${gt.families.length} variant families, ${gt.carveouts.length} carve-outs, ${gt.residualUnknowns.length} residual unknowns. ${d.threatModel.summary}`.slice(
+          0,
+          4000,
+        ),
+      ),
+    });
+    for (const u of gt.residualUnknowns) {
+      await rt.cases.appendJournal({
+        caseId: rt.rc.caseId,
+        kind: 'GAP',
+        author,
+        itemId: item.itemId,
+        handles: [],
+        refs: [],
+        text: subjectScrub(rt, `${u.unknownId} [${u.kind}] ${u.question} — ${u.whySourceCannotSettle}`),
+        data: { unknownId: u.unknownId, kind: u.kind, affects: u.affects },
+      });
+    }
+    await this.askContextQuestions(rt, gt);
+    // Families the census did not already turn into a LOGIC_AUDIT get one, within the cap.
+    const items = await rt.cases.listWorkItems(rt.rc.caseId);
+    const logicItems = items.filter((i) => i.kind === 'LOGIC_AUDIT');
+    const covered = new Set(
+      logicItems.flatMap((i) => [...`${i.title}\n${i.description}`.matchAll(/\bFAM-\d+\b/g)].map((m) => m[0])),
+    );
+    const coveredPaths = new Set(
+      logicItems.flatMap((i) =>
+        [...i.description.matchAll(/([\w./-]+\.[A-Za-z0-9]+):\d+/g)].map((m) => m[1] as string),
+      ),
+    );
+    const cap = this.o.config.recon?.maxLogicItems ?? 8;
+    const at = this.now().toISOString();
+    let count = logicItems.length;
+    for (const f of gt.families) {
+      if (count >= cap) break;
+      if (covered.has(f.familyId) || f.members.every((m) => coveredPaths.has(m.path))) continue;
+      const itemId = `${rt.rc.caseId}:${logicItemSlug(`fam-${f.familyId}`)}`;
+      if (await rt.cases.getWorkItem(itemId)) continue;
+      await rt.cases.saveWorkItem({
+        itemId,
+        caseId: rt.rc.caseId,
+        kind: 'LOGIC_AUDIT',
+        title: `Logic audit of ${f.familyId}: ${f.rootCause.slice(0, 120)}`,
+        description: `Variant family ${f.familyId}${f.baselineId ? ` (baseline ${f.baselineId})` : ''}:\n${f.members.map((m) => `- ${m.path}:${m.startLine} ${m.label}`).join('\n')}`,
+        status: 'todo',
+        mandatory: true,
+        persona: 'logic',
+        handles: [],
+        dependsOn: [],
+        createdBy: 'host',
+        round: rt.rc.round,
+        attempts: 0,
+        createdAt: at,
+        updatedAt: at,
+      });
+      count++;
+    }
+  }
+
+  /** Residual unknowns become human-only review questions in the inbox (ADR-051); the case does not park. */
+  private async askContextQuestions(rt: CaseRuntime, gt: GroundTruth): Promise<void> {
+    const created = await askContextQuestions(rt.cases, rt.rc, gt.residualUnknowns, this.now());
+    for (const a of created) {
+      this.emit({
+        type: 'approval',
+        caseId: rt.rc.caseId,
+        message: `review question for a human: ${a.title}`,
+        data: { approvalId: a.approvalId, humanOnly: true, question: true },
+      });
+    }
+  }
+
+  /** After a hunt item, a critic re-pass looks only for what was missed, until a pass adds nothing (ADR-049). */
+  private async maybeSeedCritic(rt: CaseRuntime, item: WorkItem, created: number): Promise<void> {
+    const passes = this.o.config.recon?.enabled ? this.o.config.recon.criticPasses : 0;
+    if (passes <= 0 || !rt.groundTruth) return;
+    let subjectId = item.itemId;
+    let pass = 1;
+    if (item.kind === 'COMPLETENESS_CRITIC') {
+      if (!item.subjectItemId) return;
+      const m = /-critic-(\d+)$/.exec(item.itemId);
+      pass = (m ? Number(m[1]) : 1) + 1;
+      subjectId = item.subjectItemId;
+      if (created === 0) {
+        await rt.cases.appendJournal({
+          caseId: rt.rc.caseId,
+          kind: 'NOTE',
+          author: 'host',
+          itemId: item.itemId,
+          handles: [],
+          refs: [],
+          text: `Critic pass ${pass - 1} over ${subjectId.split(':').pop()} added nothing new; stopping.`,
+        });
+        return;
+      }
+    } else if (!CRITIQUED_KINDS.has(item.kind)) return;
+    if (pass > passes) return;
+    const itemId = `${subjectId}-critic-${pass}`;
+    if (await rt.cases.getWorkItem(itemId)) return;
+    const subject = subjectId === item.itemId ? item : await rt.cases.getWorkItem(subjectId);
+    const at = this.now().toISOString();
+    await rt.cases.saveWorkItem({
+      itemId,
+      caseId: rt.rc.caseId,
+      kind: 'COMPLETENESS_CRITIC',
+      title: `Completeness re-pass ${pass}: ${(subject ?? item).title.slice(0, 120)}`,
+      description: (subject ?? item).description,
+      status: 'todo',
+      mandatory: true,
+      persona: 'critic',
+      handles: [],
+      dependsOn: [item.itemId],
+      subjectItemId: subjectId,
+      createdBy: 'host',
+      round: rt.rc.round,
+      attempts: 0,
+      createdAt: at,
+      updatedAt: at,
+    });
+  }
+
+  private async loadGroundTruth(rt: CaseRuntime): Promise<GroundTruth | undefined> {
+    const recon = await rt.cases.getWorkItem(`${rt.rc.caseId}:${RECON_ITEM}`);
+    const parsed = GroundTruth.safeParse((recon?.result as { groundTruth?: unknown } | undefined)?.groundTruth);
+    return parsed.success ? mergeOperatorContext(parsed.data, this.o.config.context) : undefined;
   }
 
   private async rememberNoise(rt: CaseRuntime, d: TriageDeliverable, by: RunRef): Promise<void> {
@@ -926,6 +1175,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       deferred: [],
       reviewerBreaker: new ConsecutiveBreaker(5),
       exploreLimit: new Semaphore(3),
+      handleItems: new Map(),
     };
     const out: RemediationOutcome[] = [];
     for (const target of o.targets) {
@@ -1202,12 +1452,16 @@ Risks: ${d.risks.join('; ')}`;
       if (!draft) continue;
       const v = latest.get(h.handle);
       // History secrets are scanner output the scan does not have yet; agent findings count only once validated.
+      // Downgrade-don't-delete (ADR-050): a BLOCKED agent finding is kept (POTENTIAL, exempt from the
+      // gate until confirmed) and listed as needing verification, never dropped.
       if (
         (h.origin === 'scanner' && h.scanner === 'gitleaks-history') ||
-        (h.origin === 'agent' && v?.verdict === 'TRUE_POSITIVE')
+        (h.origin === 'agent' && (v?.verdict === 'TRUE_POSITIVE' || v?.verdict === 'BLOCKED'))
       ) {
         drafts.push(draft);
-      } else if (h.origin === 'agent' && (!v || v.verdict === 'UNREVIEWED' || v.verdict === 'BLOCKED'))
+        if (v?.verdict === 'BLOCKED')
+          rt.deferred.push(`${h.handle} (${h.title}) kept, needs verification: ${v.rationale.slice(0, 300)}`);
+      } else if (h.origin === 'agent' && (!v || v.verdict === 'UNREVIEWED'))
         rt.deferred.push(`${h.handle} (${h.title}) was not confirmed by a validator`);
     }
     return {
@@ -1243,7 +1497,7 @@ Risks: ${d.risks.join('; ')}`;
     const memory = renderMemory(await rt.cases.listMemory({ projectId: rt.rc.projectId, status: 'active' }));
     const skills = this.skills.forPersona(persona.manifest.skills, persona.manifest.tools);
     const system = [
-      persona.prompt,
+      persona.prompt.replace(/\{\{accepted_risks\}\}/g, acceptedRisksVar(this.o.config.context)),
       skills.length ? `## Playbooks (load with load_skill)\n${this.skills.index(skills)}` : '',
       memory,
     ]
@@ -1434,7 +1688,7 @@ Risks: ${d.risks.join('; ')}`;
       ...(p.shell ? { shell: p.shell } : {}),
       images: p.images,
       scrubber: rt.subject.scrubber,
-      registerDrafts: (drafts, producer) => this.registerDrafts(rt, drafts, producer),
+      registerDrafts: async (drafts, producer) => (await this.registerDrafts(rt, drafts, producer, itemId)).handles,
       evidenceOf: (h) => this.evidenceOf(rt, h),
       now: this.now,
     }).map((t) => this.metered(rt, t));
@@ -1605,15 +1859,36 @@ Risks: ${d.risks.join('; ')}`;
       endpointCount: rt.subject.graph?.endpoints().length ?? 0,
       duplicates: duplicateGroups(rt.handles.all()),
       ...(rt.historySummary ? { historySummary: rt.historySummary } : {}),
+      ...(rt.groundTruth ? { groundTruth: rt.groundTruth } : {}),
+      ...(rt.matrix ? { matrix: rt.matrix } : {}),
+      operatorContext: renderOperatorContext(this.o.config.context),
+      agentHandles: () =>
+        rt.handles
+          .all()
+          .filter((h) => h.origin === 'agent')
+          .map((h) => ({
+            handle: h.handle,
+            title: h.title,
+            path: h.path,
+            startLine: h.startLine,
+            ...(rt.handleItems.has(h.handle) ? { itemId: rt.handleItems.get(h.handle) } : {}),
+          })),
+      itemResult: async (itemId: string) => (await rt.cases.getWorkItem(itemId))?.result,
     };
   }
 
   private async state(rt: CaseRuntime) {
+    const items = await rt.cases.listWorkItems(rt.rc.caseId);
+    const results = items
+      .filter((i) => FINDINGS_KINDS.has(i.kind) && i.result)
+      .map((i) => i.result as Partial<FindingsDeliverable>)
+      .map((r) => ({ invariantResults: r.invariantResults ?? [], variantLog: r.variantLog ?? [] }));
     return {
-      items: await rt.cases.listWorkItems(rt.rc.caseId),
+      items,
       verdicts: await rt.cases.listVerdicts(rt.rc.caseId),
       handles: rt.handles.all(),
       checks: await rt.cases.listChecks(rt.rc.caseId),
+      ...(rt.groundTruth ? { groundTruthCoverage: coverageOf(rt.groundTruth, results) } : {}),
     };
   }
 
@@ -1648,6 +1923,11 @@ Risks: ${d.risks.join('; ')}`;
   private emit(event: CaseEvent): void {
     this.o.onEvent?.(event);
   }
+}
+
+interface ReconDeliverableLike {
+  threatModel: { summary: string };
+  groundTruth: unknown;
 }
 
 function subjectScrub(rt: CaseRuntime, text: string): string {

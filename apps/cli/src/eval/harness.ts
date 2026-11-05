@@ -11,11 +11,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { buildReportModel, type Logger, runScan, type ScanReportModel } from '@spinxsca/core';
+import { buildReportModel, type GroundTruthCoverage, type Logger, runScan, type ScanReportModel } from '@spinxsca/core';
 import { importOsvFiles, KbStore } from '@spinxsca/kb';
-import { type DetectionLayer, EvalCase, EvalThresholds } from '@spinxsca/schemas';
+import { AiContextConfig, type DetectionLayer, EvalCase, EvalThresholds, SpinxscaConfig } from '@spinxsca/schemas';
 import { parse } from 'yaml';
 import type { AiExplainOptions } from '../ai';
+import { autonomyConfig, createReviewer, reviewPorts } from '../autonomy';
+import type { LoadedConfig } from '../config';
 import { openEngine, scanDeps } from '../engine';
 import { CliError } from '../ui';
 import { type CaseGrade, findingLayer, gradeCase, type ReportedFinding, truthLayer } from './grader';
@@ -26,6 +28,8 @@ export interface SuiteOptions {
   stability: boolean;
   logger: Logger;
   ai?: AiExplainOptions;
+  /** AI level of the run (ADR-049): standard/deep run the recon-first investigation on every scan. */
+  aiLevel?: 'explain' | 'standard' | 'deep';
   onProgress?: (caseId: string, message: string) => void;
 }
 
@@ -41,7 +45,14 @@ export interface CaseResult {
   grade?: CaseGrade;
   findings: ReportedFinding[];
   stability?: StabilityResult;
-  ai?: { explained: number; failures: string[]; costUsd: number };
+  ai?: {
+    explained: number;
+    investigated?: number;
+    failures: string[];
+    costUsd: number;
+    coverage?: GroundTruthCoverage;
+    deferred?: string[];
+  };
   scanIds: string[];
   durationMs: number;
   error?: string;
@@ -66,6 +77,10 @@ export interface SuiteResult {
   precision: number;
   recall: number;
   identityStability: number | null;
+  /** Fraction of variant families (ground truth `family`) whose every active member was reported (ADR-049). */
+  siblingSweepRecall: number | null;
+  /** Fraction of recon invariants that received a result, over cases that ran recon. */
+  invariantCoverage: number | null;
   passed: boolean;
   failures: string[];
 }
@@ -136,7 +151,33 @@ export async function runSuite(options: SuiteOptions): Promise<SuiteResult> {
   };
   let checked = 0;
   let stable = 0;
+  let familiesTotal = 0;
+  let familiesSwept = 0;
+  let invariantsTotal = 0;
+  let invariantsChecked = 0;
   for (const c of cases) {
+    const byFamily = new Map<string, { total: number; matched: number }>();
+    for (const tp of c.grade?.truePositives ?? []) {
+      if (!tp.truth.family) continue;
+      const f = byFamily.get(tp.truth.family) ?? { total: 0, matched: 0 };
+      f.total++;
+      f.matched++;
+      byFamily.set(tp.truth.family, f);
+    }
+    for (const fn of c.grade?.falseNegatives ?? []) {
+      if (!fn.family) continue;
+      const f = byFamily.get(fn.family) ?? { total: 0, matched: 0 };
+      f.total++;
+      byFamily.set(fn.family, f);
+    }
+    for (const f of byFamily.values()) {
+      familiesTotal++;
+      if (f.matched === f.total) familiesSwept++;
+    }
+    if (c.ai?.coverage) {
+      invariantsTotal += c.ai.coverage.invariantTotal;
+      invariantsChecked += c.ai.coverage.invariantTotal - c.ai.coverage.invariantGaps.length;
+    }
     totals.truePositives += c.grade?.truePositives.length ?? 0;
     totals.falsePositives += c.grade?.falsePositives.length ?? 0;
     totals.falseNegatives += c.grade?.falseNegatives.length ?? 0;
@@ -161,6 +202,8 @@ export async function runSuite(options: SuiteOptions): Promise<SuiteResult> {
   const precision = ratio(totals.truePositives, totals.truePositives + totals.falsePositives);
   const recall = ratio(totals.truePositives, totals.truePositives + totals.falseNegatives);
   const identityStability = checked === 0 ? null : stable / checked;
+  const siblingSweepRecall = familiesTotal === 0 ? null : familiesSwept / familiesTotal;
+  const invariantCoverage = invariantsTotal === 0 ? null : invariantsChecked / invariantsTotal;
 
   const failures: string[] = [];
   for (const c of cases) if (c.error) failures.push(`${c.id}: ${c.error}`);
@@ -169,6 +212,23 @@ export async function runSuite(options: SuiteOptions): Promise<SuiteResult> {
   if (recall < thresholds.recall_min) failures.push(`recall ${recall.toFixed(3)} < ${thresholds.recall_min}`);
   if (identityStability !== null && identityStability < thresholds.identity_stability_min) {
     failures.push(`identity stability ${identityStability.toFixed(3)} < ${thresholds.identity_stability_min}`);
+  }
+  if (
+    thresholds.sibling_sweep_min !== undefined &&
+    siblingSweepRecall !== null &&
+    siblingSweepRecall < thresholds.sibling_sweep_min
+  )
+    failures.push(`sibling-sweep recall ${siblingSweepRecall.toFixed(3)} < ${thresholds.sibling_sweep_min}`);
+  if (
+    thresholds.invariant_coverage_min !== undefined &&
+    invariantCoverage !== null &&
+    invariantCoverage < thresholds.invariant_coverage_min
+  )
+    failures.push(`invariant coverage ${invariantCoverage.toFixed(3)} < ${thresholds.invariant_coverage_min}`);
+  if (thresholds.ai_level && (options.aiLevel ?? 'off') !== thresholds.ai_level && thresholds.ai_level !== 'off') {
+    failures.push(
+      `suite expects --ai ${thresholds.ai_level} (ran with ${options.aiLevel ?? 'off'}: ai-only ground truth is pending)`,
+    );
   }
   return {
     suite: options.suiteDir,
@@ -181,6 +241,8 @@ export async function runSuite(options: SuiteOptions): Promise<SuiteResult> {
     precision,
     recall,
     identityStability,
+    siblingSweepRecall,
+    invariantCoverage,
     passed: failures.length === 0,
     failures,
   };
@@ -206,29 +268,82 @@ async function runCase(caseDir: string, phase: number, kbDir: string, options: S
       ...(options.ai ? { ai: options.ai } : {}),
     });
     try {
-      const deps = scanDeps(engine);
+      const level = options.ai ? (options.aiLevel ?? 'explain') : undefined;
+      const investigates = level === 'standard' || level === 'deep';
+      const context = evalCase.ai_context ? AiContextConfig.parse(evalCase.ai_context) : undefined;
+      // The evaluation never reads an operator configuration from the working directory: the only
+      // settings are the ones the suite was asked to run with (ADR-027).
+      const loaded: LoadedConfig = {
+        config: SpinxscaConfig.parse({
+          version: 1,
+          ...(options.ai && level
+            ? {
+                ai: {
+                  level,
+                  provider: options.ai.provider,
+                  ...(options.ai.model ? { model: options.ai.model } : {}),
+                  ...(context ? { context } : {}),
+                },
+              }
+            : {}),
+        }),
+      };
+      const review =
+        level === 'deep' && options.ai
+          ? {
+              reviewer: createReviewer({
+                ai: options.ai,
+                loaded,
+                config: {
+                  ...autonomyConfig(loaded, { unattended: true }, options.ai.maxCostUsdPerFinding * 5),
+                  ...(context ? { context } : {}),
+                },
+              }),
+              ports: reviewPorts(engine, loaded),
+            }
+          : undefined;
+      const deps = scanDeps(engine, review);
+      // AI runs on the first scan; with standard/deep it also runs on the stability re-scans so that
+      // AI-discovered findings must keep their identity like scanner findings do.
       const scan = async (label: string, baseline: 'none' | 'auto', withAi = false) => {
         progress(label);
+        const aiOpts = options.ai && level && (withAi || investigates) ? options.ai : undefined;
         const outcome = await runScan(deps, {
           projectName: evalCase.id,
           mode: 'FULL',
           exclude: [],
           baseline: baseline === 'none' ? { kind: 'none' } : { kind: 'auto' },
           reuseCache: false,
-          ...(withAi && options.ai
-            ? { ai: { level: 'explain', maxFindings: 10, maxCostUsd: options.ai.maxCostUsdPerFinding } }
+          ...(aiOpts && level
+            ? {
+                ai: {
+                  level,
+                  maxFindings: 10,
+                  maxCostUsd: aiOpts.maxCostUsdPerFinding * (investigates ? 5 : 1),
+                  ...(context ? { context } : {}),
+                },
+              }
             : {}),
         });
         result.scanIds.push(outcome.scan.scanId);
         if (outcome.scan.status === 'FAILED') throw new Error(`scan failed: ${outcome.scan.error ?? 'unknown error'}`);
-        if (outcome.ai)
-          result.ai = { explained: outcome.ai.explained, failures: outcome.ai.failures, costUsd: outcome.ai.costUsd };
+        if (outcome.ai && !result.ai)
+          result.ai = {
+            explained: outcome.ai.explained,
+            investigated: outcome.ai.investigated,
+            failures: outcome.ai.failures,
+            costUsd: outcome.ai.costUsd,
+            ...(outcome.ai.coverage ? { coverage: outcome.ai.coverage } : {}),
+          };
         return buildReportModel(engine.repo, outcome.scan.scanId);
       };
 
       const first = await scan('scan', 'none', true);
       result.findings = reported(first);
-      result.grade = gradeCase(evalCase, result.findings, phase);
+      result.grade = gradeCase(evalCase, result.findings, phase, {
+        ...(level ? { aiLevel: level } : { aiLevel: 'off' }),
+        ...(options.ai ? { provider: options.ai.provider } : {}),
+      });
 
       if (options.stability && result.findings.length > 0) {
         const stability: StabilityResult = { checked: 0, stable: 0, problems: [] };
@@ -275,6 +390,7 @@ function reported(model: ScanReportModel): ReportedFinding[] {
       startLine: loc?.startLine ?? 0,
       endLine: loc?.endLine ?? 0,
       ...(vulnerabilityIds.length ? { vulnerabilityIds } : {}),
+      scanners: [...new Set(e.candidates.map((c) => c.scanner))],
     };
   });
 }
@@ -326,6 +442,8 @@ export function writeSuiteResults(result: SuiteResult, outDir: string): void {
     `| Precision | ${result.precision.toFixed(3)} | ${result.thresholds.precision_min} |`,
     `| Recall | ${result.recall.toFixed(3)} | ${result.thresholds.recall_min} |`,
     `| Identity stability | ${result.identityStability === null ? 'n/a' : result.identityStability.toFixed(3)} | ${result.thresholds.identity_stability_min} |`,
+    `| Sibling-sweep recall | ${result.siblingSweepRecall === null ? 'n/a' : result.siblingSweepRecall.toFixed(3)} | ${result.thresholds.sibling_sweep_min ?? '-'} |`,
+    `| Invariant coverage | ${result.invariantCoverage === null ? 'n/a' : result.invariantCoverage.toFixed(3)} | ${result.thresholds.invariant_coverage_min ?? '-'} |`,
     '',
     '| Layer | TP | FP | FN | Precision | Recall |',
     '|---|---:|---:|---:|---:|---:|',

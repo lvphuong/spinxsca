@@ -1,0 +1,21 @@
+id: 103-admin-by-design-express
+title: Administrators manage every account by design (Express)
+description: >-
+  Negative control for the by-design prior: /admin routes sit behind requireRole('admin') and the
+  operator context declares that administrators manage all accounts. "An admin can do an admin
+  thing" must not be reported.
+languages: [javascript]
+source: src
+ai_context:
+  roles:
+    - name: admin
+      trust: Manages every user account, including role assignment.
+      provenance: role catalogue v2 (fixture)
+  accepted_risks:
+    - Administrators can read and modify any user account through /admin; that is the product's support model.
+findings: []
+negatives:
+  - path: routes/admin.js
+    reason: admin-only by design, guarded by requireRole('admin')
+  - path: auth.js
+    reason: authentication and role middleware are correct

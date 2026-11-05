@@ -82,7 +82,8 @@ export function stringValue(node: SyntaxNode | null | undefined): string | undef
   return undefined;
 }
 
-const AUTHZ = /(authoriz|permission|role|policy|owner|admin|acl|rbac|can[A-Z_]|allow|scope|tenant)/i;
+const AUTHZ =
+  /(authoriz|permission|role|policy|owner|admin|acl|rbac|can[A-Z_]|allow|scope|tenant|preauthoriz|secured|rolesallowed)/i;
 const AUTHN =
   /(auth|login|jwt|token|session|passport|bearer|api[_-]?key|identity|signed[_-]?in|logged|current[_-]?user|get[_-]?user|verify[_-]?user|principal)/i;
 const VALIDATION = /(valid|sanitiz|schema|celebrate|joi|zod|yup)/i;

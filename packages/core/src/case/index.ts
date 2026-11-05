@@ -6,3 +6,4 @@ export * from './ledger';
 export * from './memory';
 export * from './objectives';
 export * from './ports';
+export * from './questions';

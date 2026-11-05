@@ -38,7 +38,8 @@ State của dự án nằm ở `<path>/.spinxsca/` (SQLite + artifact content-ad
 | `scan --ai explain` | Model kiểm chứng và giải thích finding mã nguồn mới (gửi đoạn mã đã che secret), có ngân sách `--max-cost` |
 | `scan --fail-on high [--all-findings]` | Mã thoát 1 khi có finding ≥ mức; finding đã disposition không chặn. AI hạ severity hoặc kết luận `UNLIKELY` chỉ được tính khi `gate.trust_ai_downgrades: true` (mặc định gate dùng max(scanner, AI)) |
 | `scan --diff origin/main` | Incremental: chỉ quét phần thay đổi và các endpoint/caller bị ảnh hưởng; finding ngoài phạm vi được carry forward |
-| `scan --ai standard` | Thêm planner, investigators theo packet và auditor độc lập; finding AI hợp nhất với finding scanner |
+| `scan --ai standard [--context-pack ctx.yaml]` | Recon trích ground truth (invariant, baseline-correct reference, variant family, carve-out) trước khi săn; investigator theo packet phải trả checklist PASS/FAIL/UNKNOWN và hunt log; critic rà sót; auditor độc lập; finding AI hợp nhất với finding scanner và chỉ chặn gate khi CONFIRMED (`gate.ai_discovered_min_classification`) |
+| `scan --ai deep` | Case tự chủ không người trực (như `review --unattended`): item RECON → LOGIC_AUDIT theo nhóm resource bị census đánh dấu → critic → validator kiểu downgrade-don't-delete |
 | `scan --baseline branch:main` | Đối chiếu với baseline của nhánh (`baseline set --branch main --reason …`) |
 | `findings dispose <id> --as false-positive\|accepted-risk\|wont-fix\|duplicate --reason …` | Quyết định của con người, có người quyết định và hạn (accepted risk bắt buộc `--expires`) |
 | `compare <scanA> <scanB>` | Delta và lý do từng thay đổi (code, dependency, advisory, rule, scanner, coverage) |
@@ -53,9 +54,11 @@ State của dự án nằm ở `<path>/.spinxsca/` (SQLite + artifact content-ad
 | `review [--mode observe\|supervised\|autonomous] [--goal …] [--objectives …] [--l3] [--fix] [--unattended]` | Quét + case tự chủ: triage mọi finding có bằng chứng, VEX/reachability cho dependency, săn lỗ hổng mà scanner bỏ sót, PoC trong sandbox, sửa lỗi có verifier; báo cáo case ở `reports/<scanId>/case.md` |
 | `case list` / `case show <caseId> [--journal] [--audit] [--verify-chain]` | Xem case: objectives, coverage, verdict, journal và audit (kiểm hash-chain) |
 | `inbox list\|show\|approve\|deny [--grant once\|case\|standing] [--server URL --project ID]` | Hành động đang chờ con người (người trả lời đầu tiên thắng; yêu cầu human-only chỉ duyệt một lần) |
+| `inbox answer <id> --answer … --provenance …` | Trả lời câu hỏi rà soát mà recon không tự quyết được (vai trò, tenant, triển khai, quy tắc nghiệp vụ); câu trả lời thành memory `claimed`, verdict phụ thuộc được re-triage |
 | `memory list\|add\|promote\|forget` | Bộ nhớ dự án dùng cho các case sau (bài học do agent đề xuất chờ con người duyệt) |
 | `fix <id> --iterate [n]` | Lặp đề xuất patch với phản hồi re-scan/test đến khi verified |
-| `eval --suite governance` / `eval --suite ai --ai-provider scripted` | Ma trận quyết định policy (175 dòng) / cổng cứng của rà soát tự chủ (không false-confirm, không lộ secret, không side effect) |
+| `eval --suite governance` / `eval --suite ai --ai-provider scripted` | Ma trận quyết định policy (178 dòng) / cổng cứng của rà soát tự chủ (không false-confirm, không lộ secret, không side effect) |
+| `eval --suite logic --ai standard [--ai-provider anthropic]` | Suite logic/authorization (IDOR sibling, tenant isolation, race, mass assignment, workflow bypass, fail-open, negative control); đo thêm sibling-sweep recall và invariant coverage; case `live_only` chỉ tính với model thật |
 | `export --format sarif\|json\|md\|csv\|cyclonedx\|pr-comment`, `sbom` | Xuất kết quả |
 | `kb sync\|status\|snapshots\|lookup\|import\|export` | Quản lý knowledge base OSV |
 

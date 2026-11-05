@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
+import { resolve } from 'node:path';
+import { createSecretScrubber } from '@spinxsca/core';
+import { AiContextConfig } from '@spinxsca/schemas';
+import { parse as parseYaml } from 'yaml';
 import type { AiExplainOptions } from './ai';
 import { type LoadedConfig, loadConfig } from './config';
 import { type Engine, openEngine } from './engine';
@@ -17,6 +22,31 @@ export interface AiFlags {
   aiProvider?: string;
   model?: string;
   maxCost?: string;
+  /** Path of an operator context pack (ADR-051); overrides `ai.context` of the configuration. */
+  contextPack?: string;
+}
+
+/**
+ * Loads a context pack from a file chosen by the operator (never discovered in the scanned
+ * repository). Claims must not carry secrets: the pack is rejected when the scrubber detects one.
+ */
+export function loadContextPack(path: string): AiContextConfig {
+  let text: string;
+  try {
+    text = readFileSync(resolve(path), 'utf8');
+  } catch (err) {
+    throw new CliError(`cannot read context pack ${path}: ${(err as Error).message}`);
+  }
+  if (createSecretScrubber().detects(text))
+    throw new CliError(
+      `context pack ${path} looks like it contains a secret; describe the claim, do not paste credentials`,
+    );
+  const parsed = AiContextConfig.safeParse(parseYaml(text) ?? {});
+  if (!parsed.success)
+    throw new CliError(
+      `invalid context pack ${path}:\n${parsed.error.issues.map((i) => `- ${i.path.join('.')}: ${i.message}`).join('\n')}`,
+    );
+  return parsed.data;
 }
 
 /** Opens the engine for a command and always closes it. */
@@ -99,6 +129,21 @@ export function aiOptions(
     maxCostUsdPerFinding: maxCost,
     maxCostUsd: maxCost,
     maxFindings: ai?.max_findings ?? 20,
+    ...(ai?.recon
+      ? {
+          recon: {
+            enabled: ai.recon.enabled,
+            criticPasses: ai.recon.critic_passes,
+            census: ai.recon.census,
+            maxLogicItems: ai.recon.max_logic_items,
+          },
+        }
+      : {}),
+    ...(flags.contextPack
+      ? { context: loadContextPack(flags.contextPack) }
+      : ai?.context
+        ? { context: ai.context }
+        : {}),
   };
 }
 

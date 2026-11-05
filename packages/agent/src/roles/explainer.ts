@@ -1,6 +1,7 @@
 import type { ExplainOutcome, ExplainSubject, FindingExplainer, SourceTree } from '@spinxsca/core';
 import { newId } from '@spinxsca/core';
 import { type AgentRunRecord, AiExplanation, type Digest } from '@spinxsca/schemas';
+import { acceptedRisksVar, renderGroundTruth, renderOperatorContext, sliceFor } from '../ground-truth';
 import { costOf } from '../llm/pricing';
 import type { Effort, LlmProvider } from '../llm/types';
 import type { PromptBundle } from '../prompts/bundle';
@@ -39,7 +40,7 @@ export class AgentExplainer implements FindingExplainer {
     const result = await runAgent({
       role: 'explain',
       provider,
-      system: this.options.prompts.render('explain'),
+      system: this.options.prompts.render('explain', { accepted_risks: acceptedRisksVar(subject.context) }),
       prompt: explainPrompt(subject),
       tools: createCodeTools(ctx),
       submit: {
@@ -150,5 +151,14 @@ export function explainPrompt(subject: ExplainSubject): string {
     subject.related.length
       ? `Other findings in this scan: ${subject.related.length} (use list_findings).`
       : 'No other findings in this scan.',
+    ...(subject.groundTruth
+      ? [
+          '',
+          renderGroundTruth(sliceFor(subject.groundTruth, { paths: subject.occurrence.locations.map((l) => l.path) }), {
+            maxChars: 3000,
+          }),
+        ]
+      : []),
+    ...(subject.context ? ['', renderOperatorContext(subject.context)] : []),
   ].join('\n');
 }

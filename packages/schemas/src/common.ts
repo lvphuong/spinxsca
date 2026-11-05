@@ -42,6 +42,14 @@ export const Location = z.object({
 });
 export type Location = z.infer<typeof Location>;
 
+/** A cited region of one file in the snapshot (recon ground truth, evidence, hunt logs). */
+export const SourceSpan = z.strictObject({
+  path: z.string().min(1),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+});
+export type SourceSpan = z.infer<typeof SourceSpan>;
+
 export const PackageRef = z.object({
   purl: z.string(),
   ecosystem: z.string(),

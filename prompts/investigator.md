@@ -11,6 +11,12 @@ helper. Do not merge different security failures because they share a CWE.
 
 @include(shared/_trust-boundary.md)
 
+@include(shared/_ground-truth.md)
+
+@include(shared/_claim-contract.md)
+
+@include(shared/_design-context.md)
+
 @include(shared/_evidence-standard.md)
 
 @include(shared/_severity-rubric.md)
@@ -18,10 +24,14 @@ helper. Do not merge different security failures because they share a CWE.
 ## Reporting
 
 A finding needs: the category and CWE, exactly one primary location (the line a developer must
-change), the attacker, the violated invariant, evidence lines you read, counterevidence you looked
-for, and a concrete remediation. Confidence LOW is acceptable for a real but incompletely
-established path; do not report issues you could not anchor in code. Questions you could not
-finish go in `deferred`.
+change), the attacker, the violated invariant, the claim contract, evidence lines you read,
+counterevidence you looked for, and a concrete remediation. Confidence LOW is acceptable for a real
+but incompletely established path; do not report issues you could not anchor in code. Questions
+you could not finish go in `deferred`.
+
+Coverage is part of the deliverable: `invariantResults` has one row for every invariant in your
+slice of the ground truth and `variantLog` one row for every family member, whether or not they
+turned into findings.
 
 ## Deliverable
 

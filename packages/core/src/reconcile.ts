@@ -12,6 +12,7 @@ import type {
   Severity,
 } from '@spinxsca/schemas';
 import { SEVERITY_RANK } from '@spinxsca/schemas';
+import { isAiScanner } from './ai-origin';
 import type { CauseAttributor, CauseSubject } from './causes';
 import type { CoverageOracle } from './coverage';
 import type { ReconciliationCommit } from './ports';
@@ -308,6 +309,42 @@ function presentAssessment(
   const source = occurrence.locations.find((l) => l.role === 'source');
   const sink = occurrence.locations.find((l) => l.role === 'sink') ?? occurrence.locations[0];
   const rules = occurrence.ruleIds.join(', ');
+  // A group no deterministic scanner reported was discovered by a model: the assessment says so, so
+  // the gate can apply `ai_discovered_min_classification` and reports can label the origin (ADR-050).
+  const aiOnly = group.candidates.every((c) => isAiScanner(c.scanner));
+  const primary = sortedCandidates(group)[0];
+  if (aiOnly && primary) {
+    return {
+      assessmentId: input.newId('asm'),
+      findingId: occurrence.findingId,
+      scanId: input.scanId,
+      occurrenceId: occurrence.occurrenceId,
+      reconciliationState: state,
+      classification: 'POTENTIAL',
+      severity,
+      confidence,
+      exploitability: 'UNKNOWN',
+      verificationLevel: 'L2_CONTEXT',
+      ...(source || sink
+        ? {
+            attackPath: {
+              ...(source ? { source: `${source.path}:${source.startLine}` } : {}),
+              ...(sink ? { sink: `${sink.path}:${sink.startLine}` } : {}),
+              preconditions: [],
+              controls: [],
+            },
+          }
+        : {}),
+      evidenceIds: occurrence.evidenceIds,
+      counterevidence: [],
+      missingEvidence: ['Reported by an AI role from source reading; not yet independently validated.'],
+      reasoningSummary: primary.message.slice(0, 4000),
+      changeCauses: causes,
+      discoveredBy: 'ai',
+      assessedBy: `agent:discovery/${primary.scanner}`,
+      assessedAt: input.now,
+    };
+  }
   return {
     assessmentId: input.newId('asm'),
     findingId: occurrence.findingId,
@@ -334,6 +371,7 @@ function presentAssessment(
     missingEvidence: ['Not yet validated by AI context analysis (L2) or controlled verification (L3).'],
     reasoningSummary: `Static rule match (${rules}). Classified as potential until validated.`,
     changeCauses: causes,
+    discoveredBy: 'scanner',
     assessedBy: 'host:scanner-l1',
     assessedAt: input.now,
   };
@@ -357,7 +395,7 @@ function occurrenceSubject(occurrence: FindingOccurrence): CauseSubject {
 function sortedCandidates(group: CandidateGroup): FindingCandidate[] {
   return [...group.candidates].sort(
     (a, b) =>
-      Number(a.scanner === 'ai') - Number(b.scanner === 'ai') ||
+      Number(isAiScanner(a.scanner)) - Number(isAiScanner(b.scanner)) ||
       a.ruleId.localeCompare(b.ruleId) ||
       a.candidateId.localeCompare(b.candidateId),
   );

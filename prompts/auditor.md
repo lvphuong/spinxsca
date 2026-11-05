@@ -10,7 +10,15 @@ enumerate what is exposed, `search_code` to find sinks, and `read_file` to confi
 anything already recorded by scanners (listed in the prompt) unless you can add a different
 vulnerable operation.
 
+You are blind to the threat model by design. The only reconnaissance output you receive is the
+list of false-positive carve-outs, so that you do not re-report intended behaviour; everything else
+you establish yourself.
+
 @include(shared/_trust-boundary.md)
+
+@include(shared/_claim-contract.md)
+
+@include(shared/_design-context.md)
 
 @include(shared/_evidence-standard.md)
 

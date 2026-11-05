@@ -1,0 +1,24 @@
+id: 107-workflow-state-bypass-flask
+title: Shipping step reachable before payment (Flask)
+description: >-
+  pay() and cancel() check the order status; ship() does not, so an unpaid order can be shipped by
+  calling the later step first. live_only.
+languages: [python]
+source: src
+findings:
+  - id: GT-1
+    category: BUSINESS_LOGIC
+    cwe: [CWE-841]
+    path: shop/orders.py
+    lines: [21, 28]
+    severity: HIGH
+    detectable_by: [ai]
+    min_phase: 6
+    live_only: true
+negatives:
+  - path: shop/orders.py
+    lines: [9, 18]
+    reason: pay checks the NEW precondition
+  - path: shop/orders.py
+    lines: [31, 40]
+    reason: cancel checks the allowed states

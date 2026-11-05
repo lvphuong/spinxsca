@@ -16,7 +16,9 @@
         "RECONCILE",
         "REPORT",
         "AGENT",
-        "INDEX"
+        "INDEX",
+        "IMPACT",
+        "PROBE"
       ]
     },
     "name": {

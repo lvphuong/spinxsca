@@ -82,7 +82,10 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
               reviewer: createReviewer({
                 ai,
                 loaded,
-                config: autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd),
+                config: {
+                  ...autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd),
+                  ...(ai.context ? { context: ai.context } : {}),
+                },
               }),
               ports: reviewPorts(engine, loaded),
             }
@@ -97,7 +100,16 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
         ...(options.kbSnapshot ? { kbSnapshotId: options.kbSnapshot } : {}),
         ...(options.diff ? { diffBase: options.diff } : {}),
         ...(options.paths?.length ? { paths: options.paths } : {}),
-        ...(ai ? { ai: { level: ai.level, maxFindings: maxAiFindings, maxCostUsd: ai.maxCostUsd } } : {}),
+        ...(ai
+          ? {
+              ai: {
+                level: ai.level,
+                maxFindings: maxAiFindings,
+                maxCostUsd: ai.maxCostUsd,
+                ...(ai.context ? { context: ai.context } : {}),
+              },
+            }
+          : {}),
         ...(options.resume ? { resumeScanId: options.resume } : {}),
         signal: controller.signal,
         onProgress: (event) => {
@@ -113,6 +125,7 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
         ...(failOn ? { failOnSeverity: failOn } : {}),
         newFindingsOnly: options.allFindings ? false : (config.policy?.new_findings_only ?? true),
         trustAiDowngrades: config.gate?.trust_ai_downgrades ?? false,
+        aiDiscoveredMinClassification: config.gate?.ai_discovered_min_classification ?? 'CONFIRMED',
         suppressed,
       });
       const complete = outcome.scan.summary?.completeness === 'COMPLETE';

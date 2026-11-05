@@ -44,6 +44,16 @@
         "INFO"
       ]
     },
+    "severityBaseline": {
+      "type": "string",
+      "enum": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO"
+      ]
+    },
     "confidence": {
       "type": "string",
       "enum": [
@@ -139,6 +149,212 @@
           "UNKNOWN"
         ]
       }
+    },
+    "intel": {
+      "type": "object",
+      "properties": {
+        "cves": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kev": {
+          "type": "object",
+          "properties": {
+            "dateAdded": {
+              "type": "string"
+            },
+            "dueDate": {
+              "type": "string"
+            },
+            "ransomware": {
+              "type": "boolean"
+            },
+            "catalogVersion": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dateAdded",
+            "ransomware",
+            "catalogVersion"
+          ]
+        },
+        "epss": {
+          "type": "object",
+          "properties": {
+            "score": {
+              "type": "number"
+            },
+            "percentile": {
+              "type": "number"
+            },
+            "date": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "score",
+            "percentile",
+            "date"
+          ]
+        },
+        "cvss": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "baseScore": {
+              "type": "number"
+            },
+            "vector": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "baseScore",
+            "vector",
+            "source"
+          ]
+        },
+        "cwes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "cves"
+      ]
+    },
+    "applicability": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "AFFECTED",
+            "NOT_AFFECTED",
+            "UNDER_INVESTIGATION"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "enum": [
+            "component_not_present",
+            "vulnerable_code_not_present",
+            "vulnerable_code_not_in_execute_path",
+            "vulnerable_code_cannot_be_controlled_by_adversary",
+            "inline_mitigations_already_exist"
+          ]
+        },
+        "reachability": {
+          "type": "string",
+          "enum": [
+            "CALLED_FROM_ENTRYPOINT",
+            "CALLED",
+            "IMPORTED_ONLY",
+            "NOT_IMPORTED",
+            "UNKNOWN_TRANSITIVE"
+          ]
+        },
+        "symbolSource": {
+          "type": "string",
+          "enum": [
+            "advisory",
+            "model",
+            "none"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "runtime",
+            "development",
+            "test",
+            "unknown"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "status",
+        "detail"
+      ]
+    },
+    "poc": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "CONFIRMED",
+            "NOT_CONFIRMED",
+            "INVALID_HARNESS",
+            "BLOCKED",
+            "ERROR"
+          ]
+        },
+        "oracle": {
+          "type": "string",
+          "enum": [
+            "CANARY_READ",
+            "COMMAND_MARKER",
+            "DATA_DIFFERENTIAL",
+            "UNESCAPED_REFLECTION"
+          ]
+        },
+        "runs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "attackTriggered": {
+          "type": "boolean"
+        },
+        "controlTriggered": {
+          "type": "boolean"
+        },
+        "harnessDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "logDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reviewedBy": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "outcome",
+        "runs",
+        "attackTriggered",
+        "controlTriggered",
+        "detail"
+      ]
+    },
+    "discoveredBy": {
+      "type": "string",
+      "enum": [
+        "scanner",
+        "ai"
+      ]
     },
     "assessedBy": {
       "type": "string"

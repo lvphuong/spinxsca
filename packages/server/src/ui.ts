@@ -235,7 +235,7 @@ ${ai?.summary ? `<h2>AI assessment</h2><div class="card"><p>${esc(ai.summary)}</
       if (!states.exists(project.projectId)) continue;
       for (const a of await states.get(project.projectId).cases.listApprovals({ status: 'PENDING' })) {
         rows.push(
-          `<tr><td>${esc(a.requestedAt)}</td><td>${esc(project.name)}</td><td><a href="${url`/ui/projects/${project.projectId}/cases/${a.caseId}`}">${esc(a.title)}</a>${a.humanOnly ? ' <span class="chip HIGH">human only</span>' : ''}</td><td>${esc(a.tool)}<br><span class="muted">${esc(a.risk)} · ${esc(a.effect)}</span></td><td><code>spinxsca inbox approve ${esc(a.approvalId)} --project ${esc(project.projectId)} --server &lt;url&gt;</code></td></tr>`,
+          `<tr><td>${esc(a.requestedAt)}</td><td>${esc(project.name)}</td><td><a href="${url`/ui/projects/${project.projectId}/cases/${a.caseId}`}">${esc(a.title)}</a>${a.humanOnly ? ' <span class="chip HIGH">human only</span>' : ''}</td><td>${esc(a.tool)}<br><span class="muted">${esc(a.risk)} · ${esc(a.effect)}</span></td><td><code>spinxsca inbox ${a.tool === 'request_context' ? `answer ${esc(a.approvalId)} --answer "..." --provenance "..."` : `approve ${esc(a.approvalId)}`} --project ${esc(project.projectId)} --server &lt;url&gt;</code></td></tr>`,
         );
       }
     }

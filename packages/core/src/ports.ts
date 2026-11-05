@@ -4,6 +4,7 @@
  */
 import type {
   AgentRunRecord,
+  AiContextConfig,
   AiExplanation,
   ArtifactRef,
   Confidence,
@@ -14,8 +15,10 @@ import type {
   Finding,
   FindingAssessment,
   FindingCandidate,
+  FindingClaim,
   FindingMatchEvent,
   FindingOccurrence,
+  GroundTruth,
   Location,
   PackageRef,
   RuleBundleRef,
@@ -28,6 +31,8 @@ import type {
   SourceSnapshot,
   VulnIntel,
 } from '@spinxsca/schemas';
+
+import type { GroundTruthCoverage } from './case/objectives';
 
 export interface Logger {
   debug(message: string, fields?: Record<string, unknown>): void;
@@ -140,6 +145,8 @@ export interface CandidateDraft {
    * (dependency findings: purl + advisory; secrets: rule + secret hash; misconfigurations: check id).
    */
   anchorHint?: { symbol: string; shape: string };
+  /** AI drafts: the claim contract (ADR-050), carried to case handles and validator prompts. */
+  claim?: FindingClaim;
 }
 
 /** Knowledge base snapshot frozen into the Analysis Manifest (ADR-007). */
@@ -199,6 +206,10 @@ export interface ExplainSubject {
   related: Array<{ findingId: string; title: string; category: string; location: string }>;
   /** Secret locations that must be masked in anything sent to a model. */
   redactions: readonly Location[];
+  /** Ground truth of this scan's recon (ADR-049); the explainer slices it by the finding's files. */
+  groundTruth?: GroundTruth;
+  /** Operator context pack (ADR-051). */
+  context?: AiContextConfig;
 }
 
 export interface ExplainOutcome {
@@ -429,6 +440,8 @@ export interface InvestigationSubject {
   /** Incremental scans: focus on these files and endpoints. */
   focus?: { files: readonly string[]; endpointIds: readonly string[] };
   redactions: readonly Location[];
+  /** Operator context pack (ADR-051). */
+  context?: AiContextConfig;
 }
 
 export interface InvestigationOutcome {
@@ -436,8 +449,14 @@ export interface InvestigationOutcome {
   drafts: CandidateDraft[];
   runs: AgentRunRecord[];
   costUsd: number;
-  /** Packets or checks the roles could not finish within budget. */
+  /** Packets or checks the roles could not finish (model-side gaps: budget, unanswerable questions). */
   deferred: string[];
+  /** Sessions that failed for infrastructure reasons (provider error, refusal, no output); not quality signals. */
+  infraFailures?: string[];
+  /** Ground truth extracted by recon (ADR-049), merged with the operator context. */
+  groundTruth?: GroundTruth;
+  /** How much of the ground truth the roles accounted for. */
+  coverage?: GroundTruthCoverage;
 }
 
 /** Planner + investigators + baseline auditor (implemented by @spinxsca/agent). */
