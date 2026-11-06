@@ -84,3 +84,37 @@ describe('ReportFrame', () => {
     expect(frame?.getAttribute('srcdoc')).toContain('Content-Security-Policy');
   });
 });
+
+describe('RunControls', () => {
+  it('offers pause and stop while running, and asks before stopping', async () => {
+    const { RunControls } = await import('../src/components/RunControls');
+    const onAction = vi.fn();
+    render(<RunControls status="RUNNING" resuming={false} pending={undefined} onAction={onAction} />);
+    fireEvent.click(screen.getByText('Pause'));
+    expect(onAction).toHaveBeenCalledWith('pause');
+    fireEvent.click(screen.getByText('Stop'));
+    expect(screen.getByText(/cannot be resumed/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Keep it'));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(screen.getByText('Stop review'));
+    expect(onAction).toHaveBeenLastCalledWith('cancel');
+  });
+
+  it('offers resume when paused, shows progress and hides itself when finished', async () => {
+    const { RunControls } = await import('../src/components/RunControls');
+    const onAction = vi.fn();
+    const { rerender, container } = render(<RunControls status="PAUSED" resuming={false} pending={undefined} onAction={onAction} />);
+    expect(screen.queryByText('Pause')).toBeNull();
+    fireEvent.click(screen.getByText('Resume'));
+    expect(onAction).toHaveBeenCalledWith('resume');
+    rerender(<RunControls status="PAUSED" resuming pending={undefined} onAction={onAction} />);
+    expect(screen.getByText('Resuming…')).toBeTruthy();
+    expect(screen.queryByText('Resume')).toBeNull();
+    rerender(<RunControls status="RUNNING" resuming={false} pending="pause" onAction={onAction} />);
+    expect(screen.getByText('Pausing after the current step…')).toBeTruthy();
+    expect((screen.getByText('Pause').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    rerender(<RunControls status="CONVERGED" resuming={false} pending={undefined} onAction={onAction} />);
+    expect(container.innerHTML).toBe('');
+  });
+});

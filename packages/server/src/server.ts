@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { type Clock, DEFAULT_GATE_POLICY, type Logger, type ReleaseGatePolicy, systemClock } from '@spinxsca/core';
+import type { ReviewDefaults } from '@spinxsca/schemas';
 import { createApp } from './app';
 import { JobEvents } from './events';
 import type { EngineFactory } from './execute';
@@ -46,6 +47,8 @@ export interface ServerOptions {
   dispatcher?: JobDispatcher;
   /** Desktop sidecar mode (ADR-048); requires a loopback host. */
   desktop?: { launchToken: string; origins?: readonly string[] };
+  /** Defaults and limits of review options on this server (ADR-052); absent: reviews take no options. */
+  reviewDefaults?: () => ReviewDefaults;
 }
 
 /** Webview origins of the desktop app (macOS/Linux, Windows, and the Vite dev server). */
@@ -127,6 +130,8 @@ export function buildServer(options: ServerOptions) {
     ...(options.desktop
       ? { desktop: { launchToken: options.desktop.launchToken, origins: options.desktop.origins ?? DESKTOP_ORIGINS } }
       : {}),
+    control: (jobId, action, by) => worker.control(jobId, action, by),
+    ...(options.reviewDefaults ? { reviewDefaults: options.reviewDefaults } : {}),
   });
   /** Enqueues the periodic knowledge base refresh once per interval (idempotent per time bucket). */
   const scheduleKbSync = () => {

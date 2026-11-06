@@ -1,8 +1,8 @@
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { type Clock, disposeFinding, type ReleaseGatePolicy, SpinxscaError } from '@spinxsca/core';
+import { type Clock, disposeFinding, type ReleaseGatePolicy, type RunControl, SpinxscaError } from '@spinxsca/core';
 import { LocalKnowledgeBase } from '@spinxsca/kb';
-import type { FindingOccurrence } from '@spinxsca/schemas';
+import type { FindingOccurrence, ReviewDefaults } from '@spinxsca/schemas';
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getCookie } from 'hono/cookie';
@@ -34,6 +34,10 @@ export interface AppContext {
    * (admin), only browser origins of the app may call, and the Host header must be loopback.
    */
   desktop?: { launchToken: string; origins: readonly string[] };
+  /** Aborts a job running in this process at an operator's request (ADR-052). */
+  control?: (jobId: string, action: RunControl, by: string) => boolean;
+  /** What reviews may be configured with on this server (`GET /v1/review-options`). */
+  reviewDefaults?: () => ReviewDefaults;
 }
 
 export type Env = { Variables: { actor: TokenEntry } };
@@ -445,7 +449,17 @@ export function createApp(ctx: AppContext): Hono<Env> {
   v1.get('/audit', role('admin'), (c) => c.json(registry.auditLog(Number(c.req.query('limit') ?? 200))));
 
   app.route('/v1', v1);
-  mountCaseApi(app, { registry, states, clock, authenticate, role, audit, projectOr404 });
+  mountCaseApi(app, {
+    registry,
+    states,
+    clock,
+    authenticate,
+    role,
+    audit,
+    projectOr404,
+    ...(ctx.control ? { control: ctx.control } : {}),
+    ...(ctx.reviewDefaults ? { reviewDefaults: ctx.reviewDefaults } : {}),
+  });
   mountUi(app, ctx);
   app.get('/', (c) => c.redirect('/ui'));
   return app;

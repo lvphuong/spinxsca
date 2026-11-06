@@ -1,6 +1,7 @@
 import type { Logger } from '@spinxsca/core';
+import type { ReviewRunOptions } from '@spinxsca/schemas';
 import type { EngineFactory } from '@spinxsca/server';
-import { autonomyConfig, createReviewer, reviewPorts } from './autonomy';
+import { applyRunOptions, autonomyConfig, createReviewer, reviewPorts } from './autonomy';
 import type { LoadedConfig } from './config';
 import { aiOptions } from './context';
 import { openEngine, scanDeps } from './engine';
@@ -30,13 +31,14 @@ export function serviceEngineFactory(loaded: LoadedConfig, logger: Logger, kbDir
       ...(ai
         ? {
             ai: { level: ai.level, maxFindings: ai.maxFindings, maxCostUsd: ai.maxCostUsd },
-            review: (input: { goal?: string; objectives?: readonly string[] }) => ({
+            review: (input: { goal?: string; objectives?: readonly string[]; options?: ReviewRunOptions }) => ({
               reviewer: createReviewer({
                 ai,
                 loaded,
-                config: autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd),
+                config: applyRunOptions(autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd), input.options),
                 ...(input.goal ? { goal: input.goal } : {}),
                 ...(input.objectives?.length ? { objectives: input.objectives } : {}),
+                ...(input.options ? { runOptions: input.options } : {}),
                 onEvent: (e) => logger.info(`[${e.type}] ${e.message}`, { caseId: e.caseId }),
               }),
               ports: reviewPorts(engine, loaded),

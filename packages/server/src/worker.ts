@@ -1,4 +1,12 @@
-import { type Clock, dependencyInventory, type InventoryPackage, type Logger, scansByBranch } from '@spinxsca/core';
+import {
+  type Clock,
+  ControlRequestedError,
+  dependencyInventory,
+  type InventoryPackage,
+  type Logger,
+  type RunControl,
+  scansByBranch,
+} from '@spinxsca/core';
 import { LocalKnowledgeBase, normalizePackageName } from '@spinxsca/kb';
 import type { JobEvents } from './events';
 import { type EngineFactory, executeJob } from './execute';
@@ -47,6 +55,8 @@ export class Worker {
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<unknown> | undefined;
   private stopped = false;
+  /** Jobs running in this process, so an operator can pause or cancel them at once (ADR-052). */
+  private readonly active = new Map<string, AbortController>();
 
   constructor(private readonly o: WorkerOptions) {}
 
@@ -91,6 +101,26 @@ export class Worker {
     return job ? this.runClaimed(job, signal) : this.o.registry.job(jobId);
   }
 
+  /**
+   * Aborts a job running in this process with the operator's request as the reason: a review case
+   * stops as PAUSED (resumable) or CANCELLED. False when the job does not run here (queued, finished
+   * or leased by a remote worker, which stops at its next heartbeat once the job is cancelled).
+   */
+  control(jobId: string, action: RunControl, by?: string): boolean {
+    const abort = this.active.get(jobId);
+    if (!abort || abort.signal.aborted) return false;
+    abort.abort(new ControlRequestedError(action, by));
+    return true;
+  }
+
+  /** A job an operator cancelled or paused ends quietly: no retry, no failure notification. */
+  private stoppedByOperator(jobId: string): boolean {
+    const job = this.o.registry.job(jobId);
+    if (job?.status !== 'CANCELLED') return false;
+    this.o.logger.info(`job ${jobId}: ${job.error ?? 'cancelled'}`);
+    return true;
+  }
+
   private get leaseMs(): number {
     return this.o.leaseMs ?? DEFAULT_LEASE_MS;
   }
@@ -101,6 +131,7 @@ export class Worker {
       `job ${job.jobId} ${job.kind}${job.projectId ? ` ${job.projectId}` : ''} (attempt ${job.attempts})`,
     );
     const abort = new AbortController();
+    this.active.set(job.jobId, abort);
     const onCancel = () => abort.abort(signal?.reason ?? new Error('cancelled'));
     signal?.addEventListener('abort', onCancel, { once: true });
     const renew = setInterval(
@@ -113,9 +144,11 @@ export class Worker {
     try {
       const result = job.kind === 'KB_SYNC' ? await this.kbSync() : await this.execute(job, abort.signal);
       if (registry.complete(job.jobId, result, clock.now(), job.fencing)) await this.o.events.completed(job, result);
-      else this.o.logger.warn(`job ${job.jobId}: lease lost before completion; result discarded`);
+      else if (!this.stoppedByOperator(job.jobId))
+        this.o.logger.warn(`job ${job.jobId}: lease lost before completion; result discarded`);
     } catch (err) {
       const message = (err as Error).message;
+      if (this.stoppedByOperator(job.jobId)) return registry.job(job.jobId);
       const after = registry.fail(job.jobId, message, clock.now(), job.fencing);
       this.o.logger.error(
         `job ${job.jobId} failed (${after?.status === 'QUEUED' ? 'will retry' : 'giving up'}): ${message}`,
@@ -123,6 +156,7 @@ export class Worker {
       if (after) await this.o.events.failed(job, message);
     } finally {
       clearInterval(renew);
+      this.active.delete(job.jobId);
       signal?.removeEventListener('abort', onCancel);
     }
     return registry.job(job.jobId);

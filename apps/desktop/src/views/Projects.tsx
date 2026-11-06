@@ -1,10 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
-import type { ApprovalRecord, Project, ReviewCase } from '../api/types';
+import type { ApprovalRecord, JobEntry, Project, ReviewCase } from '../api/types';
 import { Icon } from '../components/icons';
-import { Banner, EmptyState, LabelPill, PageHeader, Pill, Spinner, useToast } from '../components/ui';
-import { caseStatus, humanize, relativeTime } from '../lib/format';
+import { CancelJobButton, type Pending, RunControls, useRunControl } from '../components/RunControls';
+import { Banner, Card, EmptyState, LabelPill, PageHeader, Pill, Spinner, useToast } from '../components/ui';
+import { ACTIVE_CASE_STATUSES, caseStatus, caseTitle, humanize, preparingJobs, relativeTime, resumeJobFor } from '../lib/format';
 import { pickFolder } from '../lib/shell';
+
+interface ProjectActivity {
+  latest: ReviewCase | null;
+  /** Active cases (running, waiting for a human, paused), newest first. */
+  active: ReviewCase[];
+  jobs: JobEntry[];
+}
 
 const location = (p: Project) => (p.source.kind === 'local' ? p.source.path : p.source.url);
 
@@ -25,22 +33,35 @@ export function Projects({
   const [error, setError] = useState<string | undefined>();
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState('');
-  const [latest, setLatest] = useState<Record<string, ReviewCase | null>>({});
+  const [activity, setActivity] = useState<Record<string, ProjectActivity>>({});
 
-  // The most recent review of each project, for the status column.
+  // The most recent review of each project for the status column, plus every review still running,
+  // waiting or paused so it can be controlled from here. Refreshed while the page is open.
   const ids = (projects ?? []).map((p) => p.projectId).join(',');
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!ids) return;
-    let cancelled = false;
-    void Promise.all(
-      ids.split(',').map(async (id) => [id, (await api.cases(id).catch(() => []))[0] ?? null] as const),
-    ).then((rows) => {
-      if (!cancelled) setLatest(Object.fromEntries(rows));
-    });
-    return () => {
-      cancelled = true;
-    };
+    const rows = await Promise.all(
+      ids.split(',').map(async (id) => {
+        const [cases, jobs] = await Promise.all([
+          api.cases(id).catch(() => [] as ReviewCase[]),
+          api.projectJobs(id).catch(() => [] as JobEntry[]),
+        ]);
+        const value: ProjectActivity = {
+          latest: cases[0] ?? null,
+          active: cases.filter((c) => ACTIVE_CASE_STATUSES.has(c.status)),
+          jobs,
+        };
+        return [id, value] as const;
+      }),
+    );
+    setActivity(Object.fromEntries(rows));
   }, [api, ids]);
+  useEffect(() => {
+    const tick = () => void load().catch(() => undefined);
+    tick();
+    const timer = setInterval(tick, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
 
   const add = async () => {
     setError(undefined);
@@ -96,6 +117,16 @@ export function Projects({
               </label>
             </div>
           )}
+          <ActiveReviews
+            api={api}
+            projects={projects}
+            activity={activity}
+            onOpen={onOpen}
+            onChanged={() => {
+              onChanged();
+              void load().catch(() => undefined);
+            }}
+          />
           <div className="table-list" role="list">
             <div className="table-head project-grid" aria-hidden="true">
               <span>Project</span>
@@ -105,7 +136,7 @@ export function Projects({
               <span />
             </div>
             {shown.map((p) => {
-              const last = latest[p.projectId];
+              const last = activity[p.projectId]?.latest;
               const count = waiting(p.projectId);
               return (
                 <div role="listitem" key={p.projectId}>
@@ -147,3 +178,93 @@ export function Projects({
     </div>
   );
 }
+
+/** Reviews still running, waiting for a decision, paused or scanning, with their controls. */
+function ActiveReviews({
+  api,
+  projects,
+  activity,
+  onOpen,
+  onChanged,
+}: {
+  api: ApiClient;
+  projects: Project[];
+  activity: Record<string, ProjectActivity>;
+  onOpen: (p: Project) => void;
+  onChanged: () => void;
+}) {
+  const rows = projects.flatMap((p) => {
+    const a = activity[p.projectId];
+    if (!a) return [];
+    const scanning = preparingJobs(a.jobs, a.latest ? [a.latest] : []).map((job) => ({ kind: 'job' as const, project: p, job }));
+    const cases = a.active.map((c) => ({ kind: 'case' as const, project: p, case: c, jobs: a.jobs }));
+    return [...scanning, ...cases];
+  });
+  if (rows.length === 0) return null;
+  return (
+    <Card title="Active reviews" icon="activity" className="active-reviews">
+      <ul className="active-list">
+        {rows.map((r) =>
+          r.kind === 'job' ? (
+            <li key={r.job.jobId} className="active-row">
+              <button type="button" className="active-main" onClick={() => onOpen(r.project)}>
+                <span className="project-name">{r.project.name}</span>
+                <span className="active-title">
+                  {typeof r.job.payload.goal === 'string' && r.job.payload.goal ? r.job.payload.goal : 'Full security review'}
+                </span>
+              </button>
+              <Pill tone="info">
+                <Spinner size={10} />
+                {r.job.status === 'QUEUED' ? 'Queued' : 'Scanning'}
+              </Pill>
+              <span className="faint">{relativeTime(r.job.createdAt)}</span>
+              <CancelJobButton api={api} projectId={r.project.projectId} jobId={r.job.jobId} onDone={onChanged} />
+            </li>
+          ) : (
+            <ActiveCaseRow key={r.case.caseId} api={api} project={r.project} rc={r.case} jobs={r.jobs} onOpen={onOpen} onChanged={onChanged} />
+          ),
+        )}
+      </ul>
+    </Card>
+  );
+}
+
+function ActiveCaseRow({
+  api,
+  project,
+  rc,
+  jobs,
+  onOpen,
+  onChanged,
+}: {
+  api: ApiClient;
+  project: Project;
+  rc: ReviewCase;
+  jobs: JobEntry[];
+  onOpen: (p: Project) => void;
+  onChanged: () => void;
+}) {
+  const control = useRunControl(api, project.projectId, onChanged);
+  const { settle } = control;
+  useEffect(() => settle(rc.caseId, rc.status), [rc.caseId, rc.status, settle]);
+  return (
+    <li className="active-row">
+      <button type="button" className="active-main" onClick={() => onOpen(project)}>
+        <span className="project-name">{project.name}</span>
+        <span className="active-title">{caseTitle(rc)}</span>
+      </button>
+      <LabelPill value={caseStatus(rc.status)} dot />
+      <span className="faint">
+        round {rc.round} · {relativeTime(rc.createdAt)}
+      </span>
+      <RunControls
+        compact
+        status={rc.status}
+        resuming={resumeJobFor(jobs, rc.caseId) !== undefined}
+        pending={control.pending[rc.caseId] as Pending}
+        onAction={(action) => void control.act(rc.caseId, action)}
+      />
+    </li>
+  );
+}
+

@@ -11,6 +11,8 @@ export const CaseStatus = z.enum([
   'RUNNING',
   /** Waiting for a human in the inbox; resumed by CASE_RESUME. */
   'PARKED',
+  /** Paused by an operator (ADR-052); interrupted work stays in progress and resumes with CASE_RESUME. */
+  'PAUSED',
   'CONVERGED',
   'STAGNATED',
   'BUDGET_EXHAUSTED',
@@ -327,3 +329,54 @@ export const CaseVerdict = z.object({
   at: Timestamp,
 });
 export type CaseVerdict = z.infer<typeof CaseVerdict>;
+
+export const AutonomyModeChoice = z.enum(['observe', 'supervised', 'autonomous']);
+
+/**
+ * Options an operator chooses when starting a review (ADR-052). They can only narrow what the
+ * server's configuration allows: a lower budget, fewer rounds, a stricter autonomy mode, fewer
+ * scanners. Asking for proofs of concept only seeds the work; the policy engine still decides
+ * whether each run needs a human.
+ */
+export const ReviewRunOptions = z.strictObject({
+  mode: AutonomyModeChoice.optional(),
+  maxCostUsd: z.number().positive().max(10_000).optional(),
+  maxRounds: z.number().int().min(1).max(100).optional(),
+  maxWallClockMin: z
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 60)
+    .optional(),
+  /** Seed sandboxed proofs of concept for confirmed runtime-verifiable findings. */
+  l3: z.boolean().optional(),
+  /** Recon-first logic analysis (ADR-049). */
+  recon: z.boolean().optional(),
+  criticPasses: z.number().int().min(0).max(2).optional(),
+  /** Run only these scanners (ids as reported by the server). */
+  scanners: z
+    .array(z.string().regex(/^[a-z][a-z0-9-]{1,40}$/))
+    .min(1)
+    .max(10)
+    .optional(),
+  /** Intended behaviours not to report (operator context, ADR-051). */
+  acceptedRisks: z.array(z.string().min(10).max(600)).max(30).optional(),
+});
+export type ReviewRunOptions = z.infer<typeof ReviewRunOptions>;
+
+/** What the server allows and uses when a review sets no option (`GET /v1/review-options`). */
+export interface ReviewDefaults {
+  /** False when AI is not configured on the server: reviews cannot run. */
+  available: boolean;
+  reason?: string;
+  mode: z.infer<typeof AutonomyModeChoice>;
+  maxCostUsd: number;
+  maxRounds: number;
+  maxWallClockMin: number;
+  l3: boolean;
+  recon: boolean;
+  criticPasses: number;
+  scanners: string[];
+  provider?: string;
+  model?: string;
+}

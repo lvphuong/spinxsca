@@ -81,6 +81,8 @@ const PATHS = {
     </>
   ),
   play: <path d="M8 5.75v12.5a.75.75 0 0 0 1.13.65l10.4-6.25a.75.75 0 0 0 0-1.3L9.13 5.1A.75.75 0 0 0 8 5.75z" />,
+  pause: <path d="M8.5 5.5v13M15.5 5.5v13" />,
+  stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
   chevronRight: <path d="M9.5 6l6 6-6 6" />,
   chevronDown: <path d="M6 9.5l6 6 6-6" />,
   chevronLeft: <path d="M14.5 6l-6 6 6 6" />,

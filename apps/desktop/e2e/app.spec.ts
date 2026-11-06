@@ -50,14 +50,45 @@ const approvals = [
   },
 ];
 
-async function mockApi(page: Page) {
+const reviewDefaults = {
+  available: true,
+  mode: 'supervised',
+  maxCostUsd: 10,
+  maxRounds: 6,
+  maxWallClockMin: 90,
+  l3: false,
+  recon: true,
+  criticPasses: 1,
+  scanners: ['semgrep', 'osv-scanner', 'gitleaks', 'trivy'],
+  provider: 'anthropic',
+};
+
+async function mockApi(page: Page, options: { status?: string; jobs?: unknown[] } = {}) {
   const decisions: Array<{ url: string; body: unknown; auth: string | undefined }> = [];
+  // The case's status follows control requests, as the service would report it.
+  const state = { status: options.status ?? 'PARKED', jobs: options.jobs ?? [] };
   await page.route(`${API}/v1/**`, async (route) => {
     const req = route.request();
     const auth = req.headers().authorization;
     if (auth !== `Bearer ${TOKEN}`) return route.fulfill({ status: 401, json: { error: 'authentication required' } });
     const url = new URL(req.url());
     if (url.pathname === '/v1/health') return route.fulfill({ json: { status: 'ok' } });
+    if (url.pathname === '/v1/review-options') return route.fulfill({ json: reviewDefaults });
+    if (req.method() === 'POST' && url.pathname.endsWith('/reviews')) {
+      decisions.push({ url: url.pathname, body: req.postDataJSON(), auth });
+      return route.fulfill({ status: 201, json: { job: { jobId: 'job_new' } } });
+    }
+    if (req.method() === 'POST' && url.pathname.endsWith('/control')) {
+      const body = req.postDataJSON() as { action: string };
+      decisions.push({ url: url.pathname, body, auth });
+      state.status = body.action === 'pause' ? 'PAUSED' : body.action === 'resume' ? 'RUNNING' : 'CANCELLED';
+      return route.fulfill({ status: body.action === 'resume' ? 201 : 200, json: { stoppedNow: true } });
+    }
+    if (req.method() === 'POST' && url.pathname.endsWith('/cancel')) {
+      decisions.push({ url: url.pathname, body: null, auth });
+      state.jobs = [];
+      return route.fulfill({ json: { job: { status: 'CANCELLED' }, stoppedNow: true } });
+    }
     // The real server answers with a bare array.
     if (url.pathname === '/v1/projects') return route.fulfill({ json: [project] });
     if (url.pathname === '/v1/inbox')
@@ -68,7 +99,7 @@ async function mockApi(page: Page) {
       decisions.push({ url: url.pathname, body: req.postDataJSON(), auth });
       return route.fulfill({ json: { approval: { status: 'APPROVED' } } });
     }
-    if (url.pathname.endsWith('/jobs')) return route.fulfill({ json: [] });
+    if (url.pathname.endsWith('/jobs')) return route.fulfill({ json: state.jobs });
     if (url.pathname.endsWith('/cases')) {
       return route.fulfill({
         json: {
@@ -79,7 +110,7 @@ async function mockApi(page: Page) {
               goal: 'g',
               mode: 'supervised',
               attended: false,
-              status: 'PARKED',
+              status: state.status,
               round: 2,
               createdAt: now,
             },
@@ -104,8 +135,8 @@ async function mockApi(page: Page) {
             goal: 'g',
             mode: 'supervised',
             attended: false,
-            status: 'PARKED',
-            stopReason: '1 item(s) wait for a human',
+            status: state.status,
+            stopReason: state.status === 'PAUSED' ? 'paused by you' : '1 item(s) wait for a human',
             round: 2,
             createdAt: now,
           },
@@ -177,7 +208,7 @@ test('case view: timeline from the event stream, objectives, coverage and saniti
   await mockApi(page);
   await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
   await page.getByRole('button', { name: 'Continue' }).click();
-  await page.getByRole('button', { name: /shop-api/ }).click();
+  await page.getByRole('button', { name: 'shop-api /code/shop-api' }).click();
   // The newest review opens on its own.
   await expect(page.getByRole('button', { name: /case_1/ })).toHaveAttribute('aria-current', 'true');
   await expect(page.getByText('Waiting for your decision')).toBeVisible();
@@ -200,4 +231,98 @@ test('inbox links each request to its review', async ({ page }) => {
   await poc.getByRole('button', { name: /Open review/ }).click();
   await expect(page.getByRole('heading', { name: 'shop-api' })).toBeVisible();
   await expect(page.getByRole('button', { name: /case_1/ })).toHaveAttribute('aria-current', 'true');
+});
+
+test('start a review with run options: only changed options are sent', async ({ page }) => {
+  const decisions = await mockApi(page);
+  await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'shop-api /code/shop-api' }).click();
+  await page.getByRole('button', { name: 'New review' }).click();
+  await page.getByLabel('Objectives (optional, one per line)').fill('Every admin route checks the admin role');
+  const toggle = page.getByRole('button', { name: /Run options/ });
+  await expect(toggle).toContainText('Supervised · up to $10 · 6 rounds · 90 min · all scanners · logic analysis');
+  await toggle.click();
+  await page.getByLabel('Budget (USD)').fill('2');
+  await page.getByRole('checkbox', { name: /Trivy/ }).uncheck();
+  await page.getByRole('radio', { name: /Observe/ }).check();
+  await expect(page.getByRole('radio', { name: /Autonomous/ })).toHaveCount(0);
+  await expect(toggle).toContainText('Changed');
+  await page.getByLabel('Budget (USD)').fill('50');
+  await page.getByRole('button', { name: 'Start review' }).click();
+  await expect(page.getByText('At most 10 USD on this service.')).toBeVisible();
+  expect(decisions).toHaveLength(0);
+  await page.getByLabel('Budget (USD)').fill('2');
+  await page.getByRole('button', { name: 'Start review' }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0]).toMatchObject({
+    url: '/v1/projects/srvprj_1/reviews',
+    body: {
+      branch: 'main',
+      objectives: ['Every admin route checks the admin role'],
+      options: { mode: 'observe', maxCostUsd: 2, scanners: ['semgrep', 'osv-scanner', 'gitleaks'] },
+    },
+  });
+});
+
+test('pause a running review, resume it, and stop it after a confirmation', async ({ page }) => {
+  const decisions = await mockApi(page, { status: 'RUNNING' });
+  await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'shop-api /code/shop-api' }).click();
+  const controls = page.getByRole('group', { name: 'Review controls' }).last();
+  await expect(page.getByText('Review in progress')).toBeVisible();
+  await controls.getByRole('button', { name: 'Pause' }).click();
+  await expect
+    .poll(() => decisions.at(-1))
+    .toMatchObject({ url: '/v1/projects/srvprj_1/cases/case_1/control', body: { action: 'pause' } });
+  await expect(page.getByText('Work in progress is kept; resume to continue where it stopped.')).toBeVisible();
+  await page.getByRole('group', { name: 'Review controls' }).last().getByRole('button', { name: 'Resume' }).click();
+  await expect.poll(() => decisions.at(-1)).toMatchObject({ body: { action: 'resume' } });
+  await expect(page.getByText('Review in progress')).toBeVisible();
+  await page.getByRole('group', { name: 'Review controls' }).last().getByRole('button', { name: 'Stop' }).click();
+  const confirm = page.getByRole('group', { name: 'Confirm stopping the review' }).last();
+  await expect(confirm).toContainText('cannot be resumed');
+  const before = decisions.length;
+  await confirm.getByRole('button', { name: 'Keep it' }).click();
+  expect(decisions).toHaveLength(before);
+  await page.getByRole('group', { name: 'Review controls' }).last().getByRole('button', { name: 'Stop' }).click();
+  await page
+    .getByRole('group', { name: 'Confirm stopping the review' })
+    .last()
+    .getByRole('button', { name: 'Stop review' })
+    .click();
+  await expect.poll(() => decisions.at(-1)).toMatchObject({ body: { action: 'cancel' } });
+  await expect(page.getByText('Cancelled').first()).toBeVisible();
+});
+
+test('projects page lists active reviews with controls, including one still scanning', async ({ page }) => {
+  const decisions = await mockApi(page, {
+    status: 'RUNNING',
+    jobs: [
+      {
+        jobId: 'job_scan',
+        kind: 'REVIEW',
+        projectId: 'srvprj_1',
+        payload: { branch: 'main', goal: 'Check the payment flow' },
+        status: 'RUNNING',
+        attempts: 1,
+        maxAttempts: 3,
+        createdAt: '2026-11-02T00:00:00Z',
+        updatedAt: '2026-11-02T00:00:00Z',
+      },
+    ],
+  });
+  await page.goto(`/?api=${encodeURIComponent(API)}&token=${TOKEN}`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const active = page.locator('.active-reviews');
+  await expect(active.getByText('Check the payment flow')).toBeVisible();
+  await expect(active.getByText('Scanning')).toBeVisible();
+  await active.getByRole('button', { name: 'Pause' }).click();
+  await expect.poll(() => decisions.at(-1)).toMatchObject({ body: { action: 'pause' } });
+  await expect(active.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await active.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await active.getByRole('button', { name: 'Cancel review' }).click();
+  await expect.poll(() => decisions.at(-1)).toMatchObject({ url: '/v1/projects/srvprj_1/jobs/job_scan/cancel' });
+  await expect(active.getByText('Check the payment flow')).toHaveCount(0);
 });

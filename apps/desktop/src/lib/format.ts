@@ -30,6 +30,7 @@ const lookup = (table: Record<string, Label>, value: string | undefined, fallbac
 const CASE_STATUS: Record<string, Label> = {
   RUNNING: { label: 'Running', tone: 'info' },
   PARKED: { label: 'Waiting for you', tone: 'warn' },
+  PAUSED: { label: 'Paused', tone: 'warn' },
   CONVERGED: { label: 'Completed', tone: 'ok' },
   STAGNATED: { label: 'Stalled', tone: 'warn' },
   BUDGET_EXHAUSTED: { label: 'Budget reached', tone: 'warn' },
@@ -185,4 +186,14 @@ export function failedReviewJob(jobs: JobEntry[], cases: ReviewCase[]): JobEntry
   const last = jobs.filter((j) => j.kind === 'REVIEW').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   if (last?.status !== 'FAILED') return undefined;
   return cases.some((c) => c.createdAt >= last.createdAt) ? undefined : last;
+}
+
+/** Case statuses a review can still be paused, resumed or stopped from. */
+export const ACTIVE_CASE_STATUSES: ReadonlySet<string> = new Set(['RUNNING', 'PARKED', 'PAUSED']);
+
+/** The queued or running job that resumes a case (after Resume or an answered approval). */
+export function resumeJobFor(jobs: JobEntry[], caseId: string): JobEntry | undefined {
+  return jobs.find(
+    (j) => j.kind === 'CASE_RESUME' && j.payload.caseId === caseId && (j.status === 'QUEUED' || j.status === 'RUNNING'),
+  );
 }

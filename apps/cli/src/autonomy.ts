@@ -22,7 +22,7 @@ import {
   runAnalysisShell,
 } from '@spinxsca/sandbox';
 import { createProbePort, gitHistorySecrets, imageRef, PINNED_IMAGES, parseLockfiles } from '@spinxsca/scanners';
-import type { SpinxscaConfig } from '@spinxsca/schemas';
+import type { ReviewDefaults, ReviewRunOptions, SpinxscaConfig } from '@spinxsca/schemas';
 import type { AiExplainOptions } from './ai';
 import type { LoadedConfig } from './config';
 import type { Engine } from './engine';
@@ -134,6 +134,8 @@ export function createReviewer(o: {
   onEvent?: (event: CaseEvent) => void;
   /** Wraps the model provider (evaluation records every request). */
   wrapProvider?: (p: () => LlmProvider) => () => LlmProvider;
+  /** Run options the operator chose (recorded on the case so a resume reuses them, ADR-052). */
+  runOptions?: ReviewRunOptions;
 }): AgentAutonomousReviewer {
   const provider = o.wrapProvider ? o.wrapProvider(providerFor(o.ai)) : providerFor(o.ai);
   const reviewerModel = o.loaded.config.ai?.autonomy?.reviewer_model;
@@ -148,7 +150,94 @@ export function createReviewer(o: {
     ...(o.human ? { human: o.human } : {}),
     effort: o.ai.effort,
     ...(o.onEvent ? { onEvent: o.onEvent } : {}),
+    ...(o.runOptions ? { runOptions: o.runOptions } : {}),
   });
+}
+
+const MODE_RANK: Readonly<Record<AutonomyConfig['mode'], number>> = { observe: 0, supervised: 1, autonomous: 2 };
+
+/**
+ * Applies the options an operator chose for one review (ADR-052) to the configured autonomy. Options
+ * only narrow the configuration: a lower budget, fewer rounds, a shorter time limit and a stricter
+ * mode are taken; anything looser is ignored. Proofs of concept, recon and critic passes may be
+ * switched either way because the policy engine still governs every action they lead to.
+ */
+export function applyRunOptions(base: AutonomyConfig, o: ReviewRunOptions | undefined): AutonomyConfig {
+  if (!o) return base;
+  const lower = (value: number | undefined, ceiling: number) =>
+    value === undefined ? ceiling : Math.min(value, ceiling);
+  const recon = base.recon ?? { enabled: true, criticPasses: 1, maxLogicItems: 8, census: true };
+  const risks = o.acceptedRisks?.filter((r) => r.trim()) ?? [];
+  return {
+    ...base,
+    ...(o.mode && MODE_RANK[o.mode] <= MODE_RANK[base.mode] ? { mode: o.mode } : {}),
+    maxCostUsd: lower(o.maxCostUsd, base.maxCostUsd),
+    maxRounds: lower(o.maxRounds, base.maxRounds),
+    maxWallClockMin: lower(o.maxWallClockMin, base.maxWallClockMin),
+    ...(o.l3 !== undefined ? { l3: o.l3 } : {}),
+    recon: {
+      ...recon,
+      ...(o.recon !== undefined ? { enabled: o.recon } : {}),
+      ...(o.criticPasses !== undefined ? { criticPasses: o.criticPasses } : {}),
+    },
+    ...(risks.length
+      ? {
+          context: {
+            accepted_risks: [...(base.context?.accepted_risks ?? []), ...risks].slice(0, 30),
+            roles: base.context?.roles ?? [],
+            trust_claims: base.context?.trust_claims ?? [],
+            business_invariants: base.context?.business_invariants ?? [],
+          },
+        }
+      : {}),
+  };
+}
+
+/** Scanner ids enabled by the configuration, in the order the engine runs them. */
+export function enabledScanners(config: SpinxscaConfig): string[] {
+  const s = config.scan?.scanners;
+  return [
+    ...(s?.semgrep?.enabled !== false ? ['semgrep'] : []),
+    ...(s?.osv?.enabled !== false ? ['osv-scanner'] : []),
+    ...(s?.gitleaks?.enabled !== false ? ['gitleaks'] : []),
+    ...(s?.trivy?.enabled !== false ? ['trivy'] : []),
+  ];
+}
+
+/** What a review started over the API uses when it sets no option, and the ceilings options obey. */
+export function reviewDefaults(
+  loaded: LoadedConfig,
+  ai: (AiExplainOptions & { maxCostUsd: number }) | null,
+): ReviewDefaults {
+  const scanners = enabledScanners(loaded.config);
+  if (!ai) {
+    return {
+      available: false,
+      reason: 'AI is not configured: set ai.level and a provider in the configuration',
+      mode: 'supervised',
+      maxCostUsd: 0,
+      maxRounds: 0,
+      maxWallClockMin: 0,
+      l3: false,
+      recon: false,
+      criticPasses: 0,
+      scanners,
+    };
+  }
+  const c = autonomyConfig(loaded, { unattended: true }, ai.maxCostUsd);
+  return {
+    available: true,
+    mode: c.mode,
+    maxCostUsd: c.maxCostUsd,
+    maxRounds: c.maxRounds,
+    maxWallClockMin: c.maxWallClockMin,
+    l3: c.l3,
+    recon: c.recon?.enabled ?? true,
+    criticPasses: c.recon?.criticPasses ?? 1,
+    scanners,
+    provider: ai.provider,
+    ...(ai.model ? { model: ai.model } : {}),
+  };
 }
 
 /**

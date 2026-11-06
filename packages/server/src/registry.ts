@@ -467,6 +467,21 @@ export class Registry {
     return this.job(jobId);
   }
 
+  /**
+   * Stops a queued or running job at an operator's request (ADR-052). A running job loses its lease
+   * at once: the in-process worker is aborted directly, a remote worker at its next heartbeat; its
+   * outcome is discarded and it is never retried. Returns undefined when the job had already ended.
+   */
+  cancel(jobId: string, reason: string, now: Date): JobEntry | undefined {
+    const changed = this.db
+      .prepare(
+        `UPDATE jobs SET status = 'CANCELLED', error = ?, lease_until = NULL, updated_at = ?
+         WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')`,
+      )
+      .run(reason.slice(0, 4000), now.toISOString(), jobId).changes;
+    return changed ? this.job(jobId) : undefined;
+  }
+
   job(jobId: string): JobEntry | undefined {
     const row = this.db.prepare('SELECT * FROM jobs WHERE job_id = ?').get(jobId) as JobRow | undefined;
     return row ? toJob(row) : undefined;

@@ -105,3 +105,45 @@ export interface JobEntry {
   createdAt: string;
   updatedAt: string;
 }
+
+export type AutonomyMode = 'observe' | 'supervised' | 'autonomous';
+
+/** Options chosen before a review starts; the service only lets them narrow its configuration. */
+export interface ReviewRunOptions {
+  mode?: AutonomyMode;
+  maxCostUsd?: number;
+  maxRounds?: number;
+  maxWallClockMin?: number;
+  l3?: boolean;
+  recon?: boolean;
+  criticPasses?: number;
+  scanners?: string[];
+  acceptedRisks?: string[];
+}
+
+/** What the local service uses when a review sets no option, and the ceilings options obey. */
+export interface ReviewDefaults {
+  available: boolean;
+  reason?: string;
+  mode: AutonomyMode;
+  maxCostUsd: number;
+  maxRounds: number;
+  maxWallClockMin: number;
+  l3: boolean;
+  recon: boolean;
+  criticPasses: number;
+  scanners: string[];
+  provider?: string;
+  model?: string;
+}
+
+export type CaseControlAction = 'pause' | 'resume' | 'cancel';
+
+/** Answer of a pause, resume or cancel request. `stoppedNow` is false while a remote run winds down. */
+export interface CaseControlResult {
+  case?: ReviewCase;
+  job?: JobEntry;
+  jobId?: string;
+  stoppedNow?: boolean;
+  remote?: boolean;
+}

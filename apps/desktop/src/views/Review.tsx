@@ -1,9 +1,11 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import type { ApiClient } from '../api/client';
-import type { AuditEvent, CaseView, JobEntry, Project, ReviewCase } from '../api/types';
+import type { AuditEvent, CaseView, JobEntry, Project, ReviewCase, ReviewDefaults } from '../api/types';
 import { ApprovalCard, type Decision } from '../components/ApprovalCard';
 import { Icon, type IconName } from '../components/icons';
 import { Markdown } from '../components/Markdown';
+import { CancelJobButton, type Pending, RunControls, useRunControl } from '../components/RunControls';
+import { RunOptions } from '../components/RunOptions';
 import { Banner, Card, EmptyState, LabelPill, PageHeader, Pill, SeverityBadge, Spinner, Stat, useToast } from '../components/ui';
 import {
   applicability,
@@ -22,11 +24,23 @@ import {
   preparingJobs,
   reachability,
   relativeTime,
+  resumeJobFor,
   type Tone,
   usd,
   verdictLabel,
   verificationLevel,
 } from '../lib/format';
+import {
+  type DraftProblem,
+  draftFrom,
+  loadSavedDraft,
+  objectiveList,
+  objectiveProblems,
+  type RunOptionsDraft,
+  saveDraft,
+  toRequest,
+  validateDraft,
+} from '../lib/run-options';
 
 const STAGE: Record<string, { label: string; tone: Tone }> = {
   'policy.decided': { label: 'Policy decided', tone: 'neutral' },
@@ -38,11 +52,14 @@ const STAGE: Record<string, { label: string; tone: Tone }> = {
   'verdict.applied': { label: 'Verdict', tone: 'info' },
   'validation.oracle': { label: 'Proof of concept', tone: 'danger' },
   'case.started': { label: 'Started', tone: 'info' },
+  'case.resumed': { label: 'Resumed', tone: 'info' },
+  'case.control': { label: 'Operator', tone: 'warn' },
   'case.stopped': { label: 'Stopped', tone: 'neutral' },
 };
 
 const STATUS_BANNER: Record<string, { tone: Tone; title: string; icon: IconName }> = {
   PARKED: { tone: 'warn', title: 'Waiting for your decision', icon: 'clock' },
+  PAUSED: { tone: 'warn', title: 'Paused', icon: 'pause' },
   CONVERGED: { tone: 'ok', title: 'Review complete', icon: 'checkCircle' },
   STAGNATED: { tone: 'warn', title: 'Stopped without progress', icon: 'alert' },
   BUDGET_EXHAUSTED: { tone: 'warn', title: 'Stopped at the budget limit', icon: 'alert' },
@@ -82,6 +99,12 @@ export function Review({
   const [error, setError] = useState<string | undefined>();
   const [dismissedJob, setDismissedJob] = useState<string | undefined>();
   const [busy, setBusy] = useState<string | undefined>();
+  // Run options: the service's defaults (null when this service version does not report them).
+  const [defaults, setDefaults] = useState<ReviewDefaults | null | undefined>();
+  const [draft, setDraft] = useState<RunOptionsDraft | undefined>();
+  const [objectives, setObjectives] = useState((project.ai?.objectives ?? []).join('\n'));
+  const [remember, setRemember] = useState(false);
+  const [problems, setProblems] = useState<DraftProblem[]>([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
@@ -157,13 +180,63 @@ export function Review({
 
   useEffect(() => () => clearTimeout(pending.current), []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .reviewOptions()
+      .then((d) => {
+        if (cancelled) return;
+        setDefaults(d);
+        if (d.available) {
+          const saved = loadSavedDraft(pid);
+          setDraft(draftFrom(d, saved));
+          setRemember(saved !== undefined);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDefaults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, pid]);
+
+  const control = useRunControl(
+    api,
+    pid,
+    useCallback(() => {
+      onChanged();
+      void refresh().catch(() => undefined);
+    }, [onChanged, refresh]),
+  );
+  const { settle } = control;
+  useEffect(() => {
+    for (const c of cases ?? []) settle(c.caseId, c.status);
+    if (view) settle(view.case.caseId, view.case.status);
+  }, [cases, view, settle]);
+
   const start = async (e: FormEvent) => {
     e.preventDefault();
     setError(undefined);
+    const usable = defaults?.available && draft ? draft : undefined;
+    const found = usable && defaults ? validateDraft({ ...usable, objectives }, defaults) : objectiveProblems(objectives);
+    setProblems(found);
+    if (found.length) return;
     setStarting(true);
     try {
       const since = new Date(Date.now() - 2000).toISOString();
-      await api.startReview(pid, { branch: branch.trim() || project.defaultBranch, ...(goal.trim() ? { goal: goal.trim() } : {}) });
+      const extra =
+        usable && defaults
+          ? toRequest({ ...usable, objectives }, defaults)
+          : objectiveList(objectives).length
+            ? { objectives: objectiveList(objectives) }
+            : {};
+      await api.startReview(pid, {
+        branch: branch.trim() || project.defaultBranch,
+        ...(goal.trim() ? { goal: goal.trim() } : {}),
+        ...extra,
+      });
+      if (usable) saveDraft(pid, remember ? { ...usable, objectives: '' } : undefined);
       setAwaitingSince(since);
       setComposer(false);
       toast('Review queued. Spinx scans the code first, then the review starts.', 'info');
@@ -233,7 +306,7 @@ export function Review({
       )}
 
       {showComposer && (
-        <form className="card composer" onSubmit={(e) => void start(e)}>
+        <form className="card composer" noValidate onSubmit={(e) => void start(e)}>
           <div className="composer-head">
             <h2>Start a review</h2>
             <p className="muted">
@@ -256,7 +329,40 @@ export function Review({
               <input value={branch} onChange={(e) => setBranch(e.target.value)} spellCheck={false} />
               <span className="field-hint">{project.source.kind === 'local' ? 'Local folders are reviewed as they are on disk.' : 'Reviewed at its latest commit.'}</span>
             </label>
+            <label className="field field-span">
+              <span className="field-label">Objectives (optional, one per line)</span>
+              <textarea
+                rows={2}
+                value={objectives}
+                aria-invalid={problems.some((p) => p.field === 'objectives')}
+                onChange={(e) => setObjectives(e.target.value)}
+                placeholder="e.g. Every admin route checks the admin role"
+              />
+              {problems.find((p) => p.field === 'objectives') ? (
+                <span className="field-error-inline">{problems.find((p) => p.field === 'objectives')?.message}</span>
+              ) : (
+                <span className="field-hint">Each objective is checked before the review counts as complete.</span>
+              )}
+            </label>
           </div>
+          {defaults && !defaults.available && (
+            <Banner tone="warn" title="Reviews need AI on the local service">
+              {defaults.reason ?? 'Add a model provider key in Settings, then start the review.'}
+            </Banner>
+          )}
+          {defaults?.available && draft && (
+            <RunOptions
+              defaults={defaults}
+              draft={draft}
+              problems={problems}
+              remember={remember}
+              onChange={(d) => {
+                setDraft(d);
+                if (problems.length) setProblems(validateDraft({ ...d, objectives }, defaults));
+              }}
+              onRemember={setRemember}
+            />
+          )}
           {error && (
             <p className="field-error" role="alert">
               {error}
@@ -268,7 +374,7 @@ export function Review({
                 Cancel
               </button>
             )}
-            <button type="submit" className="btn btn-primary" disabled={starting}>
+            <button type="submit" className="btn btn-primary" disabled={starting || defaults?.available === false}>
               {starting ? <Spinner size={14} /> : <Icon name="play" size={14} />}
               Start review
             </button>
@@ -300,6 +406,9 @@ export function Review({
                     </div>
                     <div className="case-item-title">{typeof j.payload.goal === 'string' && j.payload.goal ? j.payload.goal : 'Full security review'}</div>
                     <div className="case-item-meta">{j.error ? `Last attempt failed: ${j.error}` : 'The review starts when the scan finishes.'}</div>
+                    <div className="case-item-actions">
+                      <CancelJobButton api={api} projectId={pid} jobId={j.jobId} onDone={() => void refresh().catch(() => undefined)} />
+                    </div>
                   </div>
                 </li>
               ))}
@@ -328,7 +437,21 @@ export function Review({
           </aside>
           <section className="case-detail" aria-label="Review details">
             {view ? (
-              <CaseDetail view={view} timeline={timeline} live={live} busy={busy} onDecide={(id, d) => void decide(id, d)} />
+              <CaseDetail
+                view={view}
+                timeline={timeline}
+                live={live}
+                busy={busy}
+                onDecide={(id, d) => void decide(id, d)}
+                controls={
+                  <RunControls
+                    status={view.case.status}
+                    resuming={resumeJobFor(jobs, view.case.caseId) !== undefined}
+                    pending={control.pending[view.case.caseId] as Pending}
+                    onAction={(action) => void control.act(view.case.caseId, action)}
+                  />
+                }
+              />
             ) : selected ? (
               <div className="loading">
                 <Spinner size={18} label="Loading review" />
@@ -352,12 +475,14 @@ function CaseDetail({
   live,
   busy,
   onDecide,
+  controls,
 }: {
   view: CaseView;
   timeline: AuditEvent[];
   live: boolean;
   busy: string | undefined;
   onDecide: (approvalId: string, d: Decision) => void;
+  controls?: ReactNode;
 }) {
   const [tab, setTab] = useState<Tab>('findings');
   const [filter, setFilter] = useState<FindingFilter>('all');
@@ -406,6 +531,7 @@ function CaseDetail({
             <span className="meta-item">{humanize(c.mode)}</span>
           </div>
         </div>
+        {controls}
       </header>
 
       {c.status === 'RUNNING' ? (
@@ -416,7 +542,9 @@ function CaseDetail({
         <Banner tone={banner.tone} title={banner.title} icon={<Icon name={banner.icon} size={18} />}>
           {c.status === 'PARKED' && pending.length > 0
             ? `${pending.length} request${pending.length === 1 ? '' : 's'} below need${pending.length === 1 ? 's' : ''} an answer before the review continues.`
-            : c.stopReason}
+            : c.status === 'PAUSED'
+              ? `${c.stopReason ? `${c.stopReason.charAt(0).toUpperCase()}${c.stopReason.slice(1)}. ` : ''}Work in progress is kept; resume to continue where it stopped.`
+              : c.stopReason}
         </Banner>
       ) : null}
 

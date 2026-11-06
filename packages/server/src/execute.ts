@@ -10,7 +10,7 @@ import {
   type ScanRepository,
   scansByBranch,
 } from '@spinxsca/core';
-import type { ScanMode } from '@spinxsca/schemas';
+import { ReviewRunOptions, type ScanMode } from '@spinxsca/schemas';
 import type { NotificationEvent } from './notify';
 import type { JobEntry, ProjectEntry } from './registry';
 import type { ProjectWorkspace } from './workspace';
@@ -21,8 +21,11 @@ export interface ScanEngine {
   close(): void;
   /** AI configured for this server (operator configuration); absent when AI is off. */
   ai?: AiScanOptions;
-  /** Autonomous review for REVIEW / CASE_RESUME jobs; always unattended here (asks park in the inbox). */
-  review?: (input: { goal?: string; objectives?: readonly string[] }) => {
+  /**
+   * Autonomous review for REVIEW / CASE_RESUME jobs; always unattended here (asks park in the inbox).
+   * `options` are the operator's run options (ADR-052); the engine clamps them to its configuration.
+   */
+  review?: (input: { goal?: string; objectives?: readonly string[]; options?: ReviewRunOptions }) => {
     reviewer: AutonomousReviewer;
     ports: (ctx: ReviewPortContext) => Promise<ReviewPorts>;
   };
@@ -48,6 +51,7 @@ export interface ReviewPayload {
   fetchRefs?: Array<{ remote: string; local: string }>;
   goal?: string;
   objectives?: string[];
+  options?: ReviewRunOptions;
 }
 
 export interface ScanPayload {
@@ -106,6 +110,7 @@ export async function executeJob(
         ? (p.commit ?? (await rt.workspace.resolve(project, p.ref ?? `refs/heads/${p.branch}`)))
         : undefined;
     await rt.prepareKnowledgeBase?.(undefined);
+    const options = ReviewRunOptions.safeParse(p.options ?? {});
     return runInCheckout(job, project, rt, {
       commit,
       branch: p.branch,
@@ -114,6 +119,7 @@ export async function executeJob(
       review: {
         ...((p.goal ?? project.ai?.goal) ? { goal: p.goal ?? project.ai?.goal } : {}),
         ...((p.objectives ?? project.ai?.objectives) ? { objectives: p.objectives ?? project.ai?.objectives } : {}),
+        ...(options.success && p.options ? { options: options.data } : {}),
       },
     });
   }
@@ -127,6 +133,10 @@ export async function executeJob(
       return { skipped: `case ${caseId} is ${rc.status}` };
     const scan = await rt.repository(project.projectId).getScan(rc.scanId);
     if (!scan) return { skipped: `scan ${rc.scanId} of case ${caseId} not found` };
+    // The case resumes with the options it was started with (recorded at case.started, ADR-052).
+    const started = cases ? (await cases.listAudit(caseId)).find((a) => a.stage === 'case.started') : undefined;
+    const recorded = ReviewRunOptions.safeParse(started?.data.runOptions ?? {});
+    const options = recorded.success && started?.data.runOptions ? recorded.data : undefined;
     if (project.source.kind === 'git') await rt.workspace.fetch(project);
     const commit = project.source.kind === 'git' ? scan.manifest.source.commitSha : undefined;
     await rt.prepareKnowledgeBase?.(scan.manifest.knowledgeBase?.snapshotId);
@@ -135,7 +145,7 @@ export async function executeJob(
       branch: scan.manifest.source.branch ?? project.defaultBranch,
       mode: 'FULL',
       aiLevel: 'deep',
-      review: { goal: rc.goal, caseId },
+      review: { goal: rc.goal, caseId, ...(options ? { options } : {}) },
       ...(scan.manifest.knowledgeBase?.snapshotId ? { kbSnapshotId: scan.manifest.knowledgeBase.snapshotId } : {}),
     });
   }
@@ -172,7 +182,7 @@ async function runInCheckout(
     diffBase?: string;
     kbSnapshotId?: string;
     aiLevel?: AiScanOptions['level'];
-    review?: { goal?: string; objectives?: readonly string[]; caseId?: string };
+    review?: { goal?: string; objectives?: readonly string[]; caseId?: string; options?: ReviewRunOptions };
   },
 ): Promise<Record<string, unknown>> {
   const checkout = await rt.workspace.checkout(project, run.commit, job.jobId);
@@ -197,6 +207,7 @@ async function runInCheckout(
         branch: run.branch,
         ...(run.diffBase ? { diffBase: run.diffBase } : {}),
         ...(run.kbSnapshotId ? { kbSnapshotId: run.kbSnapshotId } : {}),
+        ...(run.review?.options?.scanners?.length ? { scanners: [...run.review.options.scanners] } : {}),
         ...(ai ? { ai } : {}),
         ...(run.review?.caseId ? { reviewCaseId: run.review.caseId } : {}),
         ...(rt.signal ? { signal: rt.signal } : {}),

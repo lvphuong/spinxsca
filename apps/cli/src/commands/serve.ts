@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 import { Registry, type Role, startServer } from '@spinxsca/server';
 import { startTemporalWorker } from '@spinxsca/temporal';
 import pc from 'picocolors';
+import { reviewDefaults } from '../autonomy';
 import { loadConfig } from '../config';
 import { aiOptions } from '../context';
 import { resolveKbDir } from '../engine';
@@ -81,6 +82,11 @@ export async function serveCommand(options: ServeOptions): Promise<number> {
     ...(options.pool?.length ? { pools: options.pool } : {}),
     ...(process.env.SPINXSCA_DATABASE_URL ? { databaseUrl: process.env.SPINXSCA_DATABASE_URL } : {}),
     engines: serviceEngineFactory(loaded, logger, kbDir),
+    reviewDefaults: () =>
+      reviewDefaults(
+        loaded,
+        loaded.config.ai?.level && loaded.config.ai.level !== 'off' ? aiOptions(loaded, {}) : null,
+      ),
   });
   // With Temporal, this process also hosts the job activities unless --no-worker (then run
   // `spinxsca temporal-worker` against the same data directory).

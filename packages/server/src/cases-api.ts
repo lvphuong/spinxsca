@@ -5,15 +5,22 @@ import {
   isContextQuestion,
   latestVerdicts,
   newId,
+  type RunControl,
 } from '@spinxsca/core';
 import { type ApprovalRequest, grantFromApproval, validateGrant } from '@spinxsca/governance';
-import type { ApprovalRecord, GrantScope } from '@spinxsca/schemas';
+import {
+  type ApprovalRecord,
+  type GrantScope,
+  type ReviewCase,
+  type ReviewDefaults,
+  ReviewRunOptions,
+} from '@spinxsca/schemas';
 import type { Hono, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import type { Env } from './app';
-import type { ProjectEntry, Registry, Role, TokenEntry } from './registry';
+import type { JobEntry, ProjectEntry, Registry, Role, TokenEntry } from './registry';
 import type { ProjectStates } from './state';
 
 const ApprovalDecision = z.strictObject({
@@ -37,7 +44,20 @@ const ReviewInput = z.strictObject({
     .optional(),
   goal: z.string().min(10).max(4000).optional(),
   objectives: z.array(z.string().min(5).max(400)).max(10).optional(),
+  /** Run options chosen before starting (ADR-052); they only narrow the server's configuration. */
+  options: ReviewRunOptions.optional(),
 });
+const CaseControl = z.strictObject({
+  action: z.enum(['pause', 'resume', 'cancel']),
+  reason: z.string().min(1).max(500).optional(),
+});
+
+/** Case statuses an operator can still pause, resume or cancel. */
+const CONTROLLABLE: Readonly<Record<'pause' | 'resume' | 'cancel', readonly ReviewCase['status'][]>> = {
+  pause: ['RUNNING'],
+  resume: ['PAUSED'],
+  cancel: ['RUNNING', 'PARKED', 'PAUSED'],
+};
 
 export interface CaseApiContext {
   registry: Registry;
@@ -54,6 +74,10 @@ export interface CaseApiContext {
   projectOr404: (id: string) => ProjectEntry;
   /** SSE poll interval (tests use a short one). */
   pollMs?: number;
+  /** Aborts a job running in this process (ADR-052); false when it runs elsewhere or not at all. */
+  control?: (jobId: string, action: RunControl, by: string) => boolean;
+  /** Defaults and limits of review options (ADR-052). */
+  reviewDefaults?: () => ReviewDefaults;
 }
 
 function toRequest(a: ApprovalRecord): ApprovalRequest {
@@ -190,18 +214,19 @@ export function mountCaseApi(app: Hono<Env>, ctx: CaseApiContext): void {
                 retriaged: [] as string[],
               };
         audit(c, 'approval.resolve', approval.approvalId, { status: resolved.approval.status, tool: approval.tool });
-        const resume = resolved.retriaged.length
-          ? registry.enqueue(
-              {
-                kind: 'CASE_RESUME',
-                projectId: project.projectId,
-                payload: { caseId: approval.caseId, trigger: 'api' },
-                idempotencyKey: `resume:${approval.caseId}:${approval.approvalId}`,
-                pool: project.workerPool,
-              },
-              clock.now(),
-            )
-          : undefined;
+        const resume =
+          resolved.retriaged.length && !(await isPaused(project.projectId, approval.caseId))
+            ? registry.enqueue(
+                {
+                  kind: 'CASE_RESUME',
+                  projectId: project.projectId,
+                  payload: { caseId: approval.caseId, trigger: 'api' },
+                  idempotencyKey: `resume:${approval.caseId}:${approval.approvalId}`,
+                  pool: project.workerPool,
+                },
+                clock.now(),
+              )
+            : undefined;
         return c.json({
           approval: resolved.approval,
           retriaged: resolved.retriaged,
@@ -261,9 +286,10 @@ export function mountCaseApi(app: Hono<Env>, ctx: CaseApiContext): void {
       tool: approval.tool,
       grant: stored.grantScope,
     });
-    // The parked case continues where it stopped; patch application stays a local, explicit step.
+    // The parked case continues where it stopped; patch application stays a local, explicit step. A
+    // case the operator paused stays paused: the answer is used when it is resumed (ADR-052).
     const resume =
-      approval.tool === 'request_apply'
+      approval.tool === 'request_apply' || (await isPaused(project.projectId, approval.caseId))
         ? undefined
         : registry.enqueue(
             {
@@ -307,6 +333,132 @@ export function mountCaseApi(app: Hono<Env>, ctx: CaseApiContext): void {
     return c.json({ ai: body });
   });
 
+  app.get('/v1/review-options', authenticate, (c) =>
+    c.json(
+      ctx.reviewDefaults?.() ?? {
+        available: false,
+        reason: 'this server does not report review options',
+      },
+    ),
+  );
+
+  async function isPaused(projectId: string, caseId: string): Promise<boolean> {
+    return (await casesOf(projectId).getCase(caseId))?.status === 'PAUSED';
+  }
+
+  /** The job running a case: its CASE_RESUME job, else the REVIEW job that created it (ADR-052). */
+  const runningJobFor = (projectId: string, rc: ReviewCase): JobEntry | undefined => {
+    const running = registry.jobs({ projectId, status: 'RUNNING', limit: 50 });
+    return (
+      running.find((j) => j.kind === 'CASE_RESUME' && j.payload.caseId === rc.caseId) ??
+      running
+        .filter((j) => j.kind === 'REVIEW' && j.createdAt <= rc.createdAt)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+    );
+  };
+
+  // Cancels a queued or running job, e.g. a review still scanning before its case exists.
+  app.post('/v1/projects/:id/jobs/:jobId/cancel', authenticate, role('member'), async (c) => {
+    const project = projectOr404(c.req.param('id'));
+    const job = registry.job(c.req.param('jobId'));
+    if (!job || job.projectId !== project.projectId) throw new HTTPException(404, { message: 'job not found' });
+    const actor = c.get('actor');
+    const stopped = registry.cancel(job.jobId, `cancelled by ${actor.name}`, clock.now());
+    if (!stopped) return c.json({ error: `job is already ${job.status.toLowerCase()}`, job }, 409);
+    const local = job.status === 'RUNNING' ? (ctx.control?.(job.jobId, 'cancel', actor.name) ?? false) : false;
+    audit(c, 'job.cancel', job.jobId, { kind: job.kind, was: job.status, local });
+    return c.json({ job: stopped, stoppedNow: job.status === 'QUEUED' || local });
+  });
+
+  // Pause, resume or cancel a review case (ADR-052).
+  app.post('/v1/projects/:id/cases/:caseId/control', authenticate, role('member'), async (c) => {
+    const project = projectOr404(c.req.param('id'));
+    const body = CaseControl.parse(await c.req.json());
+    const cases = casesOf(project.projectId);
+    const rc = await caseOr404(project.projectId, c.req.param('caseId'));
+    const actor = c.get('actor');
+    if (!CONTROLLABLE[body.action].includes(rc.status)) {
+      return c.json({ error: `cannot ${body.action} a case that is ${rc.status.toLowerCase()}`, case: rc }, 409);
+    }
+    const now = clock.now();
+    const at = now.toISOString();
+    const why = body.reason ? `: ${body.reason}` : '';
+    const record = async () => {
+      await cases.appendAudit({
+        caseId: rc.caseId,
+        stage: 'case.control',
+        actor: `human:${actor.name}`,
+        data: { action: body.action, from: rc.status, ...(body.reason ? { reason: body.reason } : {}) },
+      });
+      await cases.appendJournal({
+        caseId: rc.caseId,
+        kind: 'DECISION',
+        author: `human:${actor.name}`,
+        handles: [],
+        refs: [],
+        text: `${body.action === 'pause' ? 'Paused' : body.action === 'resume' ? 'Resumed' : 'Cancelled'} by ${actor.name}${why}`,
+      });
+      audit(c, `case.${body.action}`, rc.caseId, { from: rc.status });
+    };
+
+    if (body.action === 'resume') {
+      const { job, created } = registry.enqueue(
+        {
+          kind: 'CASE_RESUME',
+          projectId: project.projectId,
+          payload: { caseId: rc.caseId, trigger: 'api' },
+          // Repeated clicks while the case is still paused map to the same job and record nothing new.
+          idempotencyKey: `resume:${rc.caseId}:${rc.updatedAt}`,
+          pool: project.workerPool,
+        },
+        now,
+      );
+      if (created) await record();
+      return c.json({ case: rc, job }, created ? 201 : 200);
+    }
+
+    await record();
+    const action: RunControl = body.action;
+    const job = rc.status === 'RUNNING' ? runningJobFor(project.projectId, rc) : undefined;
+    if (job) {
+      registry.cancel(job.jobId, `${action === 'pause' ? 'paused' : 'cancelled'} by ${actor.name}${why}`, now);
+      const local = ctx.control?.(job.jobId, action, actor.name) ?? false;
+      // The orchestrator records the final status when its signal fires: at once in this process, at
+      // the next heartbeat on a remote worker (where a pause can only end as cancelled).
+      return c.json({ case: rc, jobId: job.jobId, stoppedNow: local, ...(local ? {} : { remote: true }) }, 202);
+    }
+
+    // No job holds the case (parked, paused, or a run that died): the host records the stop itself.
+    const status = action === 'pause' ? 'PAUSED' : 'CANCELLED';
+    const stopReason = `${action === 'pause' ? 'paused' : 'cancelled'} by ${actor.name}${why}`;
+    const updated = await cases.updateCase(rc.caseId, {
+      status,
+      stopReason,
+      ...(status === 'CANCELLED' ? { completedAt: at } : {}),
+    });
+    if (status === 'CANCELLED') {
+      for (const a of await cases.listApprovals({ caseId: rc.caseId, status: 'PENDING' })) {
+        await cases.resolveApproval(a.approvalId, {
+          status: 'CANCELLED',
+          resolvedBy: { kind: 'human', id: actor.name },
+          reason: 'the review was cancelled',
+          resolvedAt: at,
+        });
+      }
+      for (const j of registry.jobs({ projectId: project.projectId, status: 'QUEUED', limit: 100 })) {
+        if (j.kind === 'CASE_RESUME' && j.payload.caseId === rc.caseId)
+          registry.cancel(j.jobId, `cancelled by ${actor.name}`, now);
+      }
+    }
+    await cases.appendAudit({
+      caseId: rc.caseId,
+      stage: 'case.stopped',
+      actor: `human:${actor.name}`,
+      data: { status, reason: stopReason },
+    });
+    return c.json({ case: updated, stoppedNow: true });
+  });
+
   app.post('/v1/projects/:id/reviews', authenticate, role('member'), async (c) => {
     const project = projectOr404(c.req.param('id'));
     const body = ReviewInput.parse(await c.req.json());
@@ -320,7 +472,7 @@ export function mountCaseApi(app: Hono<Env>, ctx: CaseApiContext): void {
       },
       clock.now(),
     );
-    audit(c, 'review.enqueue', job.jobId, { branch: body.branch });
+    audit(c, 'review.enqueue', job.jobId, { branch: body.branch, ...(body.options ? { options: body.options } : {}) });
     return c.json({ job }, created ? 201 : 200);
   });
 }

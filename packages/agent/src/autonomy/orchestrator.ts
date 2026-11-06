@@ -6,6 +6,7 @@ import {
   type CandidateDraft,
   type CaseRepository,
   checkIndependence,
+  controlOf,
   type DependencyInfo,
   digestOf,
   evaluateObjectives,
@@ -144,6 +145,11 @@ export interface AgentAutonomousReviewerOptions {
   effort?: Effort;
   onEvent?: (event: CaseEvent) => void;
   now?: () => Date;
+  /**
+   * Options the operator chose for this review (ADR-052), recorded in the `case.started` audit
+   * entry so that a resumed case runs with the same budget, mode and scope.
+   */
+  runOptions?: Record<string, unknown>;
 }
 
 /** Kinds handled by the orchestrator in this milestone (PoC and fixes join with L3/remediation). */
@@ -277,6 +283,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
         reviewer: this.o.config.reviewer,
         l3: this.o.config.l3,
         policyDigest: this.policyDigest,
+        ...(this.o.runOptions ? { runOptions: this.o.runOptions } : {}),
       });
     } else {
       rc = await cases.updateCase(caseId, { status: 'RUNNING', attended: this.o.config.attended });
@@ -370,13 +377,17 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
           : Date.now() > rt.deadline
             ? 'wall-clock budget reached'
             : undefined;
+      const control = controlOf(rt.signal);
+      const by = (rt.signal?.reason as { by?: string } | undefined)?.by;
       const decided = decideStop({
         items,
         round: rt.rc.round,
         maxRounds: this.o.config.maxRounds,
         roundsWithoutProgress: stall,
         parkedItems: parked,
-        cancelled: rt.signal?.aborted ?? false,
+        cancelled: control === 'cancel',
+        paused: control === 'pause',
+        ...(by ? { by } : {}),
         ...(budgetReason ? { budgetReason } : {}),
       });
       if (decided) return decided;
@@ -481,7 +492,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
 
   // Items
 
-  private async runItem(rt: CaseRuntime, item: WorkItem): Promise<'done' | 'parked' | 'blocked'> {
+  private async runItem(rt: CaseRuntime, item: WorkItem): Promise<'done' | 'parked' | 'blocked' | 'paused'> {
     const persona = this.personas.get(item.persona);
     if (!persona) {
       await this.transition(rt, item, 'blocked', { kind: 'host' }, { blockedReason: `no persona ${item.persona}` });
@@ -558,6 +569,9 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       return 'parked';
     }
     current = (await rt.cases.getWorkItem(item.itemId)) ?? current;
+    // A pause interrupts the session between turns: the item stays in progress and its durable
+    // session resumes from the last checkpoint when the case is resumed (ADR-042, ADR-052).
+    if (result.status === 'CANCELLED' && controlOf(rt.signal) === 'pause') return 'paused';
     if (result.status !== 'COMPLETED' || result.output === undefined) {
       const reason = `${result.status.toLowerCase()}${result.error ? `: ${result.error}` : ''}`;
       await this.transition(rt, current, 'blocked', worker, {
@@ -1406,7 +1420,8 @@ Risks: ${d.risks.join('; ')}`;
   // Finish
 
   private async finish(rt: CaseRuntime, status: CaseStatus, reason: string): Promise<ReviewOutcome> {
-    const final = status !== 'PARKED';
+    // Parked and paused cases continue later: nothing is reported as not run yet.
+    const final = status !== 'PARKED' && status !== 'PAUSED';
     const items = await rt.cases.listWorkItems(rt.rc.caseId);
     if (final) {
       for (const i of items.filter((x) => x.mandatory && x.status !== 'done' && x.persona !== 'host')) {

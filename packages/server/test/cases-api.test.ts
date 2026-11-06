@@ -233,6 +233,174 @@ describe('case API and inbox', () => {
   });
 });
 
+describe('run control and review options (ADR-052)', () => {
+  it('starts reviews with options, cancels a queued job and reports options defaults', async () => {
+    const { server, member, viewer, project, call } = setup();
+    try {
+      const options = {
+        mode: 'observe',
+        maxCostUsd: 2,
+        maxRounds: 3,
+        l3: false,
+        recon: true,
+        criticPasses: 0,
+        scanners: ['semgrep', 'gitleaks'],
+        acceptedRisks: ['Admins can export every tenant for billing.'],
+      };
+      const res = await call(`/v1/projects/${project.projectId}/reviews`, {
+        method: 'POST',
+        token: member,
+        json: {
+          branch: 'main',
+          goal: 'Check authorization first.',
+          objectives: ['Every admin route is guarded'],
+          options,
+        },
+      });
+      expect(res.status).toBe(201);
+      const { job } = (await res.json()) as { job: { jobId: string; payload: Record<string, unknown> } };
+      expect(job.payload.options).toEqual(options);
+      const bad = await call(`/v1/projects/${project.projectId}/reviews`, {
+        method: 'POST',
+        token: member,
+        json: { branch: 'main', options: { maxCostUsd: -1 } },
+      });
+      expect(bad.status).toBe(400);
+
+      expect(
+        (await call(`/v1/projects/${project.projectId}/jobs/${job.jobId}/cancel`, { method: 'POST', token: viewer }))
+          .status,
+      ).toBe(403);
+      const cancelled = await call(`/v1/projects/${project.projectId}/jobs/${job.jobId}/cancel`, {
+        method: 'POST',
+        token: member,
+      });
+      expect(cancelled.status).toBe(200);
+      expect(await cancelled.json()).toMatchObject({
+        job: { status: 'CANCELLED', error: 'cancelled by alice' },
+        stoppedNow: true,
+      });
+      expect(
+        (await call(`/v1/projects/${project.projectId}/jobs/${job.jobId}/cancel`, { method: 'POST', token: member }))
+          .status,
+      ).toBe(409);
+      expect(
+        (await call(`/v1/projects/${project.projectId}/jobs/job_missing/cancel`, { method: 'POST', token: member }))
+          .status,
+      ).toBe(404);
+      // A cancelled job is never claimed again.
+      expect(
+        server.registry.claim(now, 60_000, { pools: ['default'], kinds: ['REVIEW'], workerId: 'w' }),
+      ).toBeUndefined();
+
+      const defaults = await call('/v1/review-options', { token: viewer });
+      expect(await defaults.json()).toMatchObject({ available: false });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('pauses a stale running case, resumes it once and keeps a paused case paused after an answer', async () => {
+    const { server, member, project, call, cases } = setup();
+    try {
+      await cases.createCase({ ...rc('case_1', project.projectId), status: 'RUNNING' });
+      const control = (action: string, caseId = 'case_1') =>
+        call(`/v1/projects/${project.projectId}/cases/${caseId}/control`, {
+          method: 'POST',
+          token: member,
+          json: { action },
+        });
+      expect((await control('resume')).status).toBe(409);
+      const paused = await control('pause');
+      expect(paused.status).toBe(200);
+      expect(await cases.getCase('case_1')).toMatchObject({ status: 'PAUSED', stopReason: 'paused by alice' });
+      expect((await control('pause')).status).toBe(409);
+
+      // An approval answered while paused does not restart the case.
+      await cases.createApproval(approval({ projectId: project.projectId }));
+      const answered = await call(`/v1/projects/${project.projectId}/approvals/apr_1`, {
+        method: 'POST',
+        token: member,
+        json: { decision: 'approve', grant: 'once' },
+      });
+      expect(answered.status).toBe(200);
+      expect(((await answered.json()) as { resumeJobId?: string }).resumeJobId).toBeUndefined();
+
+      const first = await control('resume');
+      expect(first.status).toBe(201);
+      const again = await control('resume');
+      expect(again.status).toBe(200);
+      const jobs = server.registry.jobs({ projectId: project.projectId });
+      expect(jobs.filter((j) => j.kind === 'CASE_RESUME').map((j) => j.payload.caseId)).toEqual(['case_1']);
+      const stages = (await cases.listAudit('case_1')).map((a) => a.stage);
+      expect(stages.filter((s) => s === 'case.control')).toHaveLength(2);
+      expect(verifyChain(await cases.listAudit('case_1')).ok).toBe(true);
+      expect((await cases.listJournal('case_1')).map((j) => j.text)).toEqual(
+        expect.arrayContaining(['Paused by alice', 'Resumed by alice']),
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('cancels a parked case: pending approvals and queued resumes are withdrawn', async () => {
+    const { server, member, project, call, cases } = setup();
+    try {
+      await cases.createCase(rc('case_1', project.projectId));
+      await cases.createApproval(approval({ projectId: project.projectId }));
+      server.registry.enqueue(
+        { kind: 'CASE_RESUME', projectId: project.projectId, payload: { caseId: 'case_1' } },
+        now,
+      );
+      const res = await call(`/v1/projects/${project.projectId}/cases/case_1/control`, {
+        method: 'POST',
+        token: member,
+        json: { action: 'cancel', reason: 'wrong branch' },
+      });
+      expect(res.status).toBe(200);
+      expect(await cases.getCase('case_1')).toMatchObject({
+        status: 'CANCELLED',
+        stopReason: 'cancelled by alice: wrong branch',
+      });
+      expect((await cases.getApproval('apr_1'))?.status).toBe('CANCELLED');
+      expect(server.registry.jobs({ projectId: project.projectId }).map((j) => j.status)).toEqual(['CANCELLED']);
+      const again = await call(`/v1/projects/${project.projectId}/cases/case_1/control`, {
+        method: 'POST',
+        token: member,
+        json: { action: 'cancel' },
+      });
+      expect(again.status).toBe(409);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('stops the job that runs a case through the worker', async () => {
+    const { server, member, project, call, cases } = setup();
+    try {
+      await cases.createCase({ ...rc('case_1', project.projectId), status: 'RUNNING' });
+      const { job } = server.registry.enqueue(
+        { kind: 'CASE_RESUME', projectId: project.projectId, payload: { caseId: 'case_1' } },
+        now,
+      );
+      server.registry.claimById(job.jobId, now, 60_000, 'local');
+      const res = await call(`/v1/projects/${project.projectId}/cases/case_1/control`, {
+        method: 'POST',
+        token: member,
+        json: { action: 'pause' },
+      });
+      expect(res.status).toBe(202);
+      // Not running in this process (no worker loop here): the job is cancelled and the case is left
+      // for the run to record, which a remote worker does at its next heartbeat.
+      expect(await res.json()).toMatchObject({ jobId: job.jobId, stoppedNow: false, remote: true });
+      expect(server.registry.job(job.jobId)).toMatchObject({ status: 'CANCELLED', error: 'paused by alice' });
+      expect(server.registry.heartbeat(job.jobId, 1, now, 60_000)).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('desktop sidecar mode', () => {
   it('accepts the launch token as the local owner only from app origins on loopback', async () => {
     const launchToken = 'x'.repeat(48);

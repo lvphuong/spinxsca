@@ -250,6 +250,8 @@ export const AuditStage = z.enum([
   'memory.proposed',
   'memory.status',
   'objective.status',
+  // Operator run control (ADR-052): pause, resume or cancel requested.
+  'case.control',
   // Phase 6 (ADR-050/051).
   'verdict.overridden',
   'context.asked',

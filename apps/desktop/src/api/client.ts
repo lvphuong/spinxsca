@@ -1,5 +1,15 @@
 import { SseParser } from '../lib/sse';
-import type { ApprovalRecord, CaseView, JobEntry, Project, ReviewCase } from './types';
+import type {
+  ApprovalRecord,
+  CaseControlAction,
+  CaseControlResult,
+  CaseView,
+  JobEntry,
+  Project,
+  ReviewCase,
+  ReviewDefaults,
+  ReviewRunOptions,
+} from './types';
 
 /** Connection to the local sidecar, injected by the desktop shell before the page loads. */
 export interface Connection {
@@ -53,8 +63,25 @@ export class ApiClient {
     });
   setAi = (projectId: string, ai: { level: string; goal?: string; objectives?: string[] }) =>
     this.call('PUT', `/v1/projects/${encodeURIComponent(projectId)}/ai`, ai);
-  startReview = (projectId: string, input: { branch: string; goal?: string; objectives?: string[] }) =>
-    this.call<{ job: { jobId: string } }>('POST', `/v1/projects/${encodeURIComponent(projectId)}/reviews`, input);
+  startReview = (
+    projectId: string,
+    input: { branch: string; goal?: string; objectives?: string[]; options?: ReviewRunOptions },
+  ) => this.call<{ job: { jobId: string } }>('POST', `/v1/projects/${encodeURIComponent(projectId)}/reviews`, input);
+  /** Defaults and ceilings of review options; older services answer 404, which callers treat as unknown. */
+  reviewOptions = () => this.call<ReviewDefaults>('GET', '/v1/review-options');
+  /** Cancels a queued or running job (a review that is still scanning). */
+  cancelJob = (projectId: string, jobId: string) =>
+    this.call<{ job: JobEntry; stoppedNow: boolean }>(
+      'POST',
+      `/v1/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobId)}/cancel`,
+    );
+  /** Pauses, resumes or cancels a review case. */
+  controlCase = (projectId: string, caseId: string, action: CaseControlAction, reason?: string) =>
+    this.call<CaseControlResult>(
+      'POST',
+      `/v1/projects/${encodeURIComponent(projectId)}/cases/${encodeURIComponent(caseId)}/control`,
+      { action, ...(reason ? { reason } : {}) },
+    );
   projectJobs = (projectId: string) =>
     this.call<JobEntry[]>('GET', `/v1/projects/${encodeURIComponent(projectId)}/jobs`);
   cases = async (projectId: string) =>

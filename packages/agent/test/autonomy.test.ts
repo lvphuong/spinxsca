@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import {
   type CandidateDraft,
+  ControlRequestedError,
   createSecretScrubber,
   type DependencyPort,
   type ReviewSubject,
@@ -728,5 +729,97 @@ describe('recon-first review case (ADR-049, ADR-050, scripted)', () => {
     expect(rejection && 'content' in rejection ? rejection.content : '').toContain('cited path:line');
     const journal = await cases.listJournal(outcome.caseId);
     expect(journal.some((e) => e.kind === 'VERDICT' && e.text.startsWith('BLOCKED'))).toBe(true);
+  });
+});
+
+describe('operator run control (ADR-052)', () => {
+  function pausable(pauseOnCall: number, action: 'pause' | 'cancel' = 'pause') {
+    const db = new Database(':memory:');
+    migrate(db);
+    const cases = new SqlCaseRepository(sqliteDriver(db));
+    const inner = new ScriptedReviewProvider();
+    const controller = new AbortController();
+    let calls = 0;
+    // Stops the run from inside a model call, as the worker does when an operator clicks Pause.
+    const provider = {
+      id: inner.id,
+      model: inner.model,
+      capabilities: () => inner.capabilities(),
+      complete: async (request: Parameters<ScriptedReviewProvider['complete']>[0]) => {
+        calls++;
+        if (calls === pauseOnCall) controller.abort(new ControlRequestedError(action, 'alice'));
+        return inner.complete(request);
+      },
+    };
+    const reviewer = new AgentAutonomousReviewer({
+      provider: () => provider,
+      promptsDir: join(ROOT, 'prompts'),
+      playbooksDir: join(ROOT, 'playbooks'),
+      config,
+      goal: 'Review this service.',
+      runOptions: { maxCostUsd: 3, recon: false },
+    });
+    const scan = { scanId: 'scan_01pause', projectId: 'prj_1', snapshotId: 'snap_1' } as ScanRun;
+    const subject: ReviewSubject = {
+      scan,
+      snapshotPaths: Object.keys(files),
+      scannerDrafts: drafts,
+      redactions: [],
+      scrubber: createSecretScrubber(),
+      ports: {
+        cases,
+        dependencies,
+        history: { scan: async () => ({ outcome: 'RAN', secrets: [] }) },
+        images: { toolbox: `sha256:${'a'.repeat(64)}`, scanners: {} },
+        workDir: '/tmp/spx-case',
+      },
+    };
+    return {
+      cases,
+      calls: () => calls,
+      run: (signal?: AbortSignal) => reviewer.review(subject, source, { maxCostUsd: 5, ...(signal ? { signal } : {}) }),
+      signal: controller.signal,
+    };
+  }
+
+  it('pauses mid-run without losing work, then resumes to convergence', async () => {
+    const { cases, run, signal } = pausable(3);
+    const paused = await run(signal);
+    expect(paused.status).toBe('PAUSED');
+    const rc = await cases.getCase(paused.caseId);
+    expect(rc).toMatchObject({ status: 'PAUSED', stopReason: 'paused by alice' });
+    expect(rc?.completedAt).toBeUndefined();
+    const items = await cases.listWorkItems(paused.caseId);
+    // Interrupted items stay in progress for the resume; none was blocked by the pause.
+    expect(items.some((i) => i.status === 'in_progress')).toBe(true);
+    expect(items.filter((i) => i.status === 'blocked')).toEqual([]);
+    expect((await cases.listChecks(paused.caseId)).filter((c) => c.checkId.startsWith('item:'))).toEqual([]);
+    expect((await cases.listObjectives(paused.caseId)).some((o) => o.status === 'NOT_MET')).toBe(false);
+    const started = (await cases.listAudit(paused.caseId)).find((a) => a.stage === 'case.started');
+    expect(started?.data.runOptions).toEqual({ maxCostUsd: 3, recon: false });
+
+    const resumed = await run();
+    expect(resumed.status).toBe('CONVERGED');
+    expect((await cases.listWorkItems(paused.caseId)).every((i) => i.status === 'done')).toBe(true);
+    expect((await cases.listAudit(paused.caseId)).map((a) => a.stage)).toContain('case.resumed');
+  });
+
+  it('cancels for good: the case ends CANCELLED and reports unfinished work', async () => {
+    const { cases, run, signal } = pausable(3, 'cancel');
+    const outcome = await run(signal);
+    expect(outcome.status).toBe('CANCELLED');
+    const rc = await cases.getCase(outcome.caseId);
+    expect(rc).toMatchObject({ status: 'CANCELLED', stopReason: 'cancelled by alice' });
+    expect(rc?.completedAt).toBeDefined();
+    expect((await cases.listChecks(outcome.caseId)).some((c) => c.outcome === 'NOT_RUN')).toBe(true);
+  });
+
+  it('decides PAUSED before CANCELLED and names who asked', () => {
+    const base = { items: [], round: 1, maxRounds: 6, roundsWithoutProgress: 0, parkedItems: new Set<string>() };
+    expect(decideStop({ ...base, cancelled: false, paused: true, by: 'bob' })).toEqual({
+      stop: 'PAUSED',
+      reason: 'paused by bob',
+    });
+    expect(decideStop({ ...base, cancelled: true })?.reason).toBe('cancelled by the operator');
   });
 });

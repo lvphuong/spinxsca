@@ -1,13 +1,13 @@
 import { TERMINAL_STATUSES } from '@spinxsca/core';
 import type { WorkItem } from '@spinxsca/schemas';
 
-export type CaseStop = 'CONVERGED' | 'STAGNATED' | 'BUDGET_EXHAUSTED' | 'PARKED' | 'CANCELLED';
+export type CaseStop = 'CONVERGED' | 'STAGNATED' | 'BUDGET_EXHAUSTED' | 'PARKED' | 'PAUSED' | 'CANCELLED';
 
 /**
  * When a case stops (ADR-044): all agent work terminal (CONVERGED), two rounds without progress
  * (STAGNATED), a budget or the round limit reached (BUDGET_EXHAUSTED), waiting for a human with
- * nothing else runnable (PARKED), or cancelled. Unmet objectives and unfinished mandatory items are
- * then reported with reasons, never dropped.
+ * nothing else runnable (PARKED), paused by the operator (PAUSED, resumable; ADR-052), or cancelled.
+ * Unmet objectives and unfinished mandatory items are then reported with reasons, never dropped.
  */
 export function decideStop(s: {
   items: readonly WorkItem[];
@@ -16,9 +16,14 @@ export function decideStop(s: {
   roundsWithoutProgress: number;
   parkedItems: ReadonlySet<string>;
   cancelled: boolean;
+  /** The operator paused the case: stop now, keep in-progress work resumable. */
+  paused?: boolean;
+  /** Who asked, for the stop reason. */
+  by?: string;
   budgetReason?: string;
 }): { stop: CaseStop; reason: string } | undefined {
-  if (s.cancelled) return { stop: 'CANCELLED', reason: 'cancelled by the operator' };
+  if (s.paused) return { stop: 'PAUSED', reason: `paused by ${s.by ?? 'the operator'}` };
+  if (s.cancelled) return { stop: 'CANCELLED', reason: `cancelled by ${s.by ?? 'the operator'}` };
   if (s.budgetReason) return { stop: 'BUDGET_EXHAUSTED', reason: s.budgetReason };
   const open = s.items.filter((i) => !TERMINAL_STATUSES.has(i.status) && i.persona !== 'host');
   if (open.length === 0) return { stop: 'CONVERGED', reason: 'every work item is finished' };
