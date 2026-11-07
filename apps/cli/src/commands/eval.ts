@@ -34,7 +34,7 @@ export async function evalCommand(options: EvalCommandOptions): Promise<number> 
       ? {
           aiLevel: options.ai as 'explain' | 'standard' | 'deep',
           ai: {
-            provider: (options.aiProvider ?? 'scripted') as 'anthropic' | 'openai-compatible' | 'scripted',
+            provider: (options.aiProvider ?? 'scripted') as AiExplainOptions['provider'],
             effort: 'high' as const,
             refusalFallback: 'default' as const,
             maxCostUsdPerFinding: 2,

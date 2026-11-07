@@ -158,6 +158,8 @@ rows:
   - { id: l7-deps-reachability, tool: deps_reachability, expect: "allow L7" }
   - { id: l7-resource-matrix, tool: resource_matrix, expect: "allow L7" }
   - { id: l7-data-access-sites, tool: data_access_sites, expect: "allow L7" }
+  - { id: l7-read-result, tool: read_result, expect: "allow L7" }
+  - { id: l7-repo-map, tool: repo_map, expect: "allow L7" }
   - { id: l7-explore, tool: explore, expect: "allow L7" }
   - { id: l7-load-skill, tool: load_skill, expect: "allow L7" }
   - { id: l7-journal-record, tool: journal_record, expect: "allow L7" }

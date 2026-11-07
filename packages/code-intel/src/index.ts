@@ -5,5 +5,6 @@ export { type AuthContext, buildEdges, CodeGraph, resolveModule, type SymbolQuer
 export { computeImpact, type ImpactReport } from './impact';
 export { getParser, languageOfPath } from './parser';
 export { dependencyUsage, importMatcher } from './reachability';
+export { AST_SELECTOR_VERSION, AST_SELECTORS, SignalCache, scanAst } from './selectors';
 export { CodeIntelService } from './service';
 export * from './types';

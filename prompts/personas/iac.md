@@ -2,7 +2,7 @@
 id: iac
 role: iac
 description: Reviews container, deployment and infrastructure configuration.
-tools: [read_file, search_code, list_files, get_finding, finding_evidence, journal_read, journal_record, load_skill, run_scanner, shell_exec]
+tools: [read_file, search_code, list_files, get_finding, finding_evidence, journal_read, journal_record, load_skill, run_scanner, shell_exec, read_result, repo_map]
 skills: [iac-docker]
 tier: deep
 max_steps: 16

@@ -1,4 +1,4 @@
-import type { Effort, LlmProvider, Usage } from '../llm/types';
+import type { Effort, LlmProvider, Message, Usage } from '../llm/types';
 import type { AgentTool, SubmitTool } from './tools';
 
 export interface AgentBudget {
@@ -14,6 +14,7 @@ export const DEFAULT_BUDGET: AgentBudget = {
   maxSteps: 30,
   maxToolCalls: 60,
   maxTotalTokens: 400_000,
+  // Ceiling only: the session clamps it to what the model's window and profile allow (ADR-053).
   maxOutputTokens: 32_000,
 };
 
@@ -32,6 +33,8 @@ export interface AgentRunOptions<O> {
   /** Stops the run once the accumulated cost exceeds this amount (needs `costOf`). */
   maxCostUsd?: number;
   costOf?: (usage: Usage, model: string) => number | undefined;
+  /** Model-written compaction summary (ADR-056). */
+  summarizer?: (dropped: readonly Message[]) => Promise<string>;
 }
 
 export interface AgentStep {
@@ -41,6 +44,8 @@ export interface AgentStep {
   usage: Usage;
   toolCalls: Array<{ name: string; ok: boolean }>;
   fallbacks: Array<{ from: string; to: string }>;
+  /** Estimated input tokens of the request that produced this step. */
+  contextTokens?: number;
 }
 
 export type AgentStatus = 'COMPLETED' | 'BUDGET_EXHAUSTED' | 'REFUSED' | 'FAILED' | 'CANCELLED';
@@ -56,4 +61,6 @@ export interface AgentRunResult<O> {
   models: string[];
   error?: string;
   refusal?: { category?: string; explanation?: string };
+  /** Times the outbound view was summarised (ADR-053). */
+  compactions?: number;
 }

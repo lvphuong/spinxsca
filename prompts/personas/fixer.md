@@ -2,7 +2,7 @@
 id: fixer
 role: fixer
 description: Proposes a minimal fix in a workspace copy and iterates on verification feedback.
-tools: [read_file, search_code, list_files, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, load_skill, patch_propose, verify_run, request_apply]
+tools: [read_file, search_code, list_files, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, load_skill, patch_propose, verify_run, request_apply, read_result, repo_map]
 skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, deserialization]
 tier: deep
 max_steps: 24

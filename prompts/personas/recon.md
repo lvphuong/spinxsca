@@ -2,7 +2,7 @@
 id: recon
 role: recon
 description: Reconnaissance first; writes the ground truth every other reviewer verifies against.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, journal_read, journal_record, explore, load_skill, propose_memory]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, journal_read, journal_record, explore, load_skill, propose_memory, read_result, repo_map]
 skills: [business-logic, tenant-isolation, idor-bola, authn-session]
 tier: deep
 max_steps: 30

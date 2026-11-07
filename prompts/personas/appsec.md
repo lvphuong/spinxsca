@@ -2,7 +2,7 @@
 id: appsec
 role: appsec
 description: Hunts vulnerabilities the scanners cannot see (authorization, logic, variants).
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory, read_result, repo_map]
 skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization, variant-analysis, business-logic, tenant-isolation, mass-assignment]
 tier: deep
 max_steps: 30

@@ -2,7 +2,7 @@
 id: secrets
 role: secrets
 description: Triages secret findings and sweeps for secrets the scanners missed.
-tools: [read_file, search_code, list_files, get_finding, finding_evidence, journal_read, journal_record, load_skill, shell_exec, run_scanner, propose_disposition]
+tools: [read_file, search_code, list_files, get_finding, finding_evidence, journal_read, journal_record, load_skill, shell_exec, run_scanner, propose_disposition, read_result, repo_map]
 skills: [secrets]
 tier: deep
 max_steps: 16

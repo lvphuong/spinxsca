@@ -33,6 +33,32 @@ describe('config', () => {
     expect(config.policy?.fail_on_severity).toBe('HIGH');
     expect(config.policy?.new_findings_only).toBe(true);
   });
+
+  it('routes roles to named models and rejects unknown aliases (ADR-053)', () => {
+    const ok = SpinxscaConfig.parse({
+      version: 1,
+      ai: {
+        models: {
+          local: { provider: 'ollama', model: 'qwen2.5-coder:14b', base_url: 'http://localhost:11434', num_ctx: 32768 },
+          cloud: { provider: 'anthropic', model: 'claude-opus-5-5' },
+        },
+        routing: { deep: 'cloud', map: 'local', reduce: 'cloud' },
+        sharding: { enabled: 'on' },
+      },
+    });
+    expect(ok.ai?.models?.local?.tool_mode).toBe('auto');
+    expect(ok.ai?.sharding).toMatchObject({ enabled: 'on', max_shards: 64, token_budget_ratio: 0.35 });
+    const missing = SpinxscaConfig.safeParse({
+      version: 1,
+      ai: { models: { local: { provider: 'ollama', model: 'm', base_url: 'http://h' } }, routing: { deep: 'nope' } },
+    });
+    expect(missing.success).toBe(false);
+    const noUrl = SpinxscaConfig.safeParse({
+      version: 1,
+      ai: { models: { local: { provider: 'ollama', model: 'm' } } },
+    });
+    expect(noUrl.success).toBe(false);
+  });
 });
 
 describe('eval case', () => {

@@ -7,6 +7,7 @@ import { parse as parseYaml } from 'yaml';
 import type { AiExplainOptions } from './ai';
 import { type LoadedConfig, loadConfig } from './config';
 import { type Engine, openEngine } from './engine';
+import { withDetectedProfiles } from './models';
 import { CliError, createLogger } from './ui';
 
 export interface CommonOptions {
@@ -56,6 +57,9 @@ export async function withEngine<T>(
   fn: (engine: Engine, loaded: LoadedConfig) => Promise<T>,
 ): Promise<T> {
   const loaded = loadConfig(options.config);
+  // Self-hosted endpoints are asked for their context length once, before any role is built (ADR-053).
+  const aiConfig = options.aiConfig ? await withDetectedProfiles(options.aiConfig) : undefined;
+  if (aiConfig && options.aiConfig) Object.assign(options.aiConfig, aiConfig);
   const engine = openEngine({
     scanRoot: path ?? '.',
     config: loaded,
@@ -106,14 +110,24 @@ export function aiOptions(
   if (ai && ai.send_source_snippets === false) {
     throw new CliError('AI is disabled for this project: ai.send_source_snippets is false in the configuration');
   }
-  const provider = (flags.aiProvider ?? ai?.provider ?? 'anthropic') as AiExplainOptions['provider'];
-  if (!['anthropic', 'openai-compatible', 'scripted'].includes(provider))
+  // `scripted-weak` is a CLI-only alias: the scripted doubles behind a weak prompted-tool model (ADR-054).
+  const weak = flags.aiProvider === 'scripted-weak';
+  const provider = (
+    weak ? 'scripted' : (flags.aiProvider ?? ai?.provider ?? 'anthropic')
+  ) as AiExplainOptions['provider'];
+  if (!['anthropic', 'openai-compatible', 'ollama', 'scripted'].includes(provider))
     throw new CliError(`unknown AI provider "${provider}"`);
   const allowed = ai?.data_policy?.allowed_providers;
   if (allowed && !allowed.includes(provider)) {
     throw new CliError(
       `AI provider "${provider}" is not allowed by ai.data_policy.allowed_providers (${allowed.join(', ')})`,
     );
+  }
+  for (const [alias, m] of Object.entries(ai?.models ?? {})) {
+    if (allowed && !allowed.includes(m.provider))
+      throw new CliError(
+        `ai.models.${alias} uses provider "${m.provider}" not allowed by ai.data_policy.allowed_providers`,
+      );
   }
   const maxCost = flags.maxCost !== undefined ? Number(flags.maxCost) : (ai?.max_cost_usd_per_scan ?? 5);
   if (!Number.isFinite(maxCost) || maxCost <= 0) throw new CliError('--max-cost must be a positive number of USD');
@@ -124,6 +138,13 @@ export function aiOptions(
     ...(ai?.base_url ? { baseUrl: ai.base_url } : {}),
     ...(ai?.api_key_env ? { apiKeyEnv: ai.api_key_env } : {}),
     ...(ai?.data_policy?.exclude_paths.length ? { excludePaths: ai.data_policy.exclude_paths } : {}),
+    // `--ai-provider` names one model explicitly; the alias table then stays out of the way (ADR-053).
+    ...(ai?.models && Object.keys(ai.models).length ? { models: ai.models } : {}),
+    ...(ai?.routing ? { routing: ai.routing } : {}),
+    ...(flags.aiProvider ? { forceSingleModel: true } : {}),
+    ...(weak ? { weak: true } : {}),
+    ...(ai?.sharding ? { sharding: ai.sharding } : {}),
+    ...(ai?.parallel ? { parallel: ai.parallel } : {}),
     effort: ai?.effort ?? 'high',
     refusalFallback: ai?.refusal_fallback ?? 'default',
     maxCostUsdPerFinding: maxCost,

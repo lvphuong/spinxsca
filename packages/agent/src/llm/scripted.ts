@@ -1,3 +1,4 @@
+import { SCRIPTED_CAPABILITIES } from './catalog';
 import {
   type CompletionRequest,
   type CompletionResult,
@@ -31,7 +32,7 @@ export class ScriptedProvider implements LlmProvider {
   constructor(private readonly turns: ScriptedTurn[]) {}
 
   capabilities(): ProviderCapabilities {
-    return { tools: true, thinking: false, promptCaching: false, refusalFallback: false };
+    return { ...SCRIPTED_CAPABILITIES };
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {

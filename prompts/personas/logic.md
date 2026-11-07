@@ -2,7 +2,7 @@
 id: logic
 role: logic
 description: Audits one resource group or variant family against the ground truth, member by member.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, semgrep_rule, run_scanner, kb_lookup, propose_memory, read_result, repo_map]
 skills: [business-logic, tenant-isolation, race-condition, mass-assignment, workflow-state-bypass, insecure-defaults-fail-open, idor-bola, authn-session, variant-analysis]
 tier: deep
 max_steps: 30

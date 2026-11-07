@@ -6,7 +6,9 @@ import type {
   AgentRunRecord,
   AiContextConfig,
   AiExplanation,
+  AiFinding,
   ArtifactRef,
+  AttackChain,
   Confidence,
   Coverage,
   Digest,
@@ -19,16 +21,21 @@ import type {
   FindingMatchEvent,
   FindingOccurrence,
   GroundTruth,
+  InvariantResult,
   Location,
   PackageRef,
+  RepoDigest,
   RuleBundleRef,
   ScannerCapability,
   ScanRun,
   ScanStatus,
   ScanTask,
   Severity,
+  Shard,
+  ShardSignal,
   SnapshotFile,
   SourceSnapshot,
+  VariantHuntRow,
   VulnIntel,
 } from '@spinxsca/schemas';
 
@@ -428,6 +435,12 @@ export interface CodeIntelPort {
   }): Promise<{ artifact: ArtifactRef; graph: CodeGraphView; stats: Record<string, number> }>;
   load(artifacts: ArtifactStore, digest: Digest): Promise<CodeGraphView>;
   impact(base: CodeGraphView | undefined, current: CodeGraphView, changedFiles: readonly string[]): CodeImpactReport;
+  /** AST selector signals for the shard planner (ADR-055); cached per file content. */
+  signals?(input: {
+    files: readonly SnapshotFile[];
+    readText: (path: string) => Promise<string | undefined>;
+    signal?: AbortSignal;
+  }): Promise<ShardSignal[]>;
 }
 
 /** What the investigation roles see (docs/architecture/03 section 3): code, index, scanner candidates. */
@@ -442,6 +455,8 @@ export interface InvestigationSubject {
   redactions: readonly Location[];
   /** Operator context pack (ADR-051). */
   context?: AiContextConfig;
+  /** Repository digest for orientation (ADR-056). */
+  digest?: RepoDigest;
 }
 
 export interface InvestigationOutcome {
@@ -460,6 +475,78 @@ export interface InvestigationOutcome {
 }
 
 /** Planner + investigators + baseline auditor (implemented by @spinxsca/agent). */
+/** One shard handed to a map worker (ADR-055): owned files, readable neighbours, the ground-truth slice. */
+export interface ShardSubject {
+  scan: ScanRun;
+  shard: Shard;
+  snapshotPaths: readonly string[];
+  graph?: CodeGraphView;
+  groundTruth: GroundTruth;
+  scannerCandidates: InvestigationSubject['scannerCandidates'];
+  redactions: readonly Location[];
+  context?: AiContextConfig;
+  digest?: RepoDigest;
+}
+
+export interface MapOutput {
+  findings: AiFinding[];
+  invariantResults: InvariantResult[];
+  variantLog: VariantHuntRow[];
+  reviewedFiles: string[];
+  deferred: string[];
+  run: AgentRunRecord;
+  costUsd: number;
+}
+
+export interface ReconOutput {
+  groundTruth: GroundTruth;
+  summary: string;
+  runs: AgentRunRecord[];
+  costUsd: number;
+  deferred: string[];
+  infraFailures: string[];
+}
+
+export interface ReduceInput {
+  scan: ScanRun;
+  groundTruth: GroundTruth;
+  maps: ReadonlyArray<Omit<MapOutput, 'run' | 'costUsd'>>;
+  scannerCandidates: InvestigationSubject['scannerCandidates'];
+  redactions: readonly Location[];
+}
+
+export interface ReduceOutput {
+  drafts: CandidateDraft[];
+  chains: AttackChain[];
+  run?: AgentRunRecord;
+  costUsd: number;
+  deferred: string[];
+  coverage: GroundTruthCoverage;
+}
+
+/**
+ * Sharded investigation (ADR-055): one recon over the repository, one map worker per shard, one
+ * reducer over the workers' claims. Each stage is an activity the scan checkpoints separately.
+ */
+export interface MapReduceInvestigator {
+  readonly info: FindingExplainer['info'] & { mapModel: string; reduceModel: string };
+  /** Effective context window of the map model, which sizes the shard token budget. */
+  mapEffectiveWindow(): number;
+  /** Concurrent shard workers the map endpoint tolerates. */
+  mapWorkers(): number;
+  recon(
+    subject: InvestigationSubject,
+    source: SourceTree,
+    options: { maxCostUsd: number; signal?: AbortSignal; onRun?: (run: AgentRunRecord) => Promise<void> },
+  ): Promise<ReconOutput>;
+  map(
+    subject: ShardSubject,
+    source: SourceTree,
+    options: { maxCostUsd: number; signal?: AbortSignal },
+  ): Promise<MapOutput>;
+  reduce(input: ReduceInput, options: { maxCostUsd: number; signal?: AbortSignal }): Promise<ReduceOutput>;
+}
+
 export interface Investigator {
   readonly info: FindingExplainer['info'];
   investigate(

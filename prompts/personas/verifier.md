@@ -2,7 +2,7 @@
 id: verifier
 role: verifier
 description: Independently reviews a proposed fix and its verification results.
-tools: [read_file, search_code, list_files, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, verify_run]
+tools: [read_file, search_code, list_files, get_symbol, callers, callees, get_finding, finding_evidence, journal_read, journal_record, verify_run, read_result, repo_map]
 tier: deep
 max_steps: 16
 ---

@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 import type { ArtifactStore, CodeGraphView, CodeImpactReport, CodeIntelPort, SourceTree } from '@spinxsca/core';
-import type { ArtifactRef, Digest, SnapshotFile, SourceSnapshot } from '@spinxsca/schemas';
+import type { ArtifactRef, Digest, ShardSignal, SnapshotFile, SourceSnapshot } from '@spinxsca/schemas';
 import { IndexBuilder } from './builder';
 import { CodeGraph } from './graph';
 import { computeImpact } from './impact';
+import { SignalCache } from './selectors';
 import type { CodeIndexData } from './types';
 
 /** CodeIntelPort implementation: index artifacts are content-addressed JSON; the per-file cache lives in the state directory. */
@@ -50,6 +51,19 @@ export class CodeIntelService implements CodeIntelPort {
 
   impact(base: CodeGraphView | undefined, current: CodeGraphView, changedFiles: readonly string[]): CodeImpactReport {
     return computeImpact(base ? unwrap(base) : undefined, unwrap(current), changedFiles);
+  }
+
+  async signals(input: {
+    files: readonly SnapshotFile[];
+    readText: (path: string) => Promise<string | undefined>;
+    signal?: AbortSignal;
+  }): Promise<ShardSignal[]> {
+    const cache = new SignalCache(this.cachePath);
+    try {
+      return await cache.signals(input);
+    } finally {
+      cache.close();
+    }
   }
 }
 

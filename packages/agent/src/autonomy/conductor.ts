@@ -1,5 +1,5 @@
 import { type ResourceMatrix, renderCensus } from '@spinxsca/core';
-import type { CaseHandle, Objective, WorkItem, WorkItemKind } from '@spinxsca/schemas';
+import type { CaseHandle, Objective, Shard, WorkItem, WorkItemKind } from '@spinxsca/schemas';
 
 /** Persona that triages a handle, by category: secrets and IaC have their own specialists. */
 export function triagePersona(h: Pick<CaseHandle, 'category' | 'scanner'>): string {
@@ -33,7 +33,11 @@ export interface ConductorInput {
   maxLogicItems?: number;
   /** Rendered operator context (ADR-051) shown to the recon item. */
   operatorContext?: string;
+  /** Large repositories (ADR-055): one threat packet per shard, by priority, instead of per endpoint file. */
+  shards?: readonly Shard[];
 }
+
+const MAX_BASELINE_ENDPOINTS = 40;
 
 export const RECON_ITEM = 'recon';
 export const logicItemSlug = (group: string) =>
@@ -128,17 +132,46 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
     }
   }
 
-  const groups = new Map<string, EndpointRef[]>();
-  for (const e of input.endpoints) groups.set(e.path, [...(groups.get(e.path) ?? []), e]);
-  const ranked = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-  const limit = input.maxThreatPackets ?? 6;
-  ranked.slice(0, limit).forEach(([path, endpoints], i) => {
-    item(`threat-${i + 1}`, 'THREAT_PACKET', 'appsec', `Threat-model the endpoints in ${path}`, {
-      description: endpoints.map((e) => `${e.method} ${e.route} (${e.path}:${e.line}, id ${e.id})`).join('\n'),
-      dependsOn: afterRecon,
+  let rest: EndpointRef[];
+  if (input.shards?.length) {
+    // Sharded board: packets follow the plan's priority; endpoints outside any packet go to the baseline audit.
+    const limit = input.maxThreatPackets ?? input.shards.length;
+    const covered = new Set<string>();
+    [...input.shards]
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, limit)
+      .forEach((shard, i) => {
+        for (const f of shard.files) covered.add(f.path);
+        const signals = shard.signals
+          .slice(0, 20)
+          .map((s) => `${s.path}:${s.line ?? '?'} [${s.selectorId}] ${s.evidence}`);
+        item(`threat-${i + 1}`, 'THREAT_PACKET', 'appsec', `Threat-model shard ${shard.shardId}: ${shard.module}`, {
+          description: [
+            `Owned files:\n${shard.files.map((f) => `- ${f.path}`).join('\n')}`,
+            shard.neighbors.length
+              ? `Readable neighbours (context only):\n${shard.neighbors.map((n) => `- ${n}`).join('\n')}`
+              : '',
+            signals.length ? `Signals:\n${signals.join('\n')}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+          dependsOn: afterRecon,
+        });
+      });
+    rest = input.endpoints.filter((e) => !covered.has(e.path));
+  } else {
+    const groups = new Map<string, EndpointRef[]>();
+    for (const e of input.endpoints) groups.set(e.path, [...(groups.get(e.path) ?? []), e]);
+    const ranked = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    const limit = input.maxThreatPackets ?? 6;
+    ranked.slice(0, limit).forEach(([path, endpoints], i) => {
+      item(`threat-${i + 1}`, 'THREAT_PACKET', 'appsec', `Threat-model the endpoints in ${path}`, {
+        description: endpoints.map((e) => `${e.method} ${e.route} (${e.path}:${e.line}, id ${e.id})`).join('\n'),
+        dependsOn: afterRecon,
+      });
     });
-  });
-  const rest = ranked.slice(limit).flatMap(([, e]) => e);
+    rest = ranked.slice(limit).flatMap(([, e]) => e);
+  }
 
   // Logic audits (ADR-049): one per resource group where a sibling lacks a control its siblings have.
   if (recon && input.matrix) {
@@ -178,7 +211,12 @@ export function seedBoard(input: ConductorInput): { items: WorkItem[]; objective
   }
   item('baseline-audit', 'BASELINE_AUDIT', 'appsec', 'Independent baseline audit of the codebase', {
     description: rest.length
-      ? `Endpoints not covered by a threat packet:\n${rest.map((e) => `${e.method} ${e.route} (${e.path}:${e.line})`).join('\n')}`
+      ? `Endpoints not covered by a threat packet:\n${rest
+          .slice(0, MAX_BASELINE_ENDPOINTS)
+          .map((e) => `${e.method} ${e.route} (${e.path}:${e.line})`)
+          .join(
+            '\n',
+          )}${rest.length > MAX_BASELINE_ENDPOINTS ? `\n(+${rest.length - MAX_BASELINE_ENDPOINTS} more; use list_endpoints)` : ''}`
       : '',
     dependsOn: afterRecon,
   });

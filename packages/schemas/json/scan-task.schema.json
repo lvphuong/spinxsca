@@ -18,7 +18,8 @@
         "AGENT",
         "INDEX",
         "IMPACT",
-        "PROBE"
+        "PROBE",
+        "SHARD_PLAN"
       ]
     },
     "name": {

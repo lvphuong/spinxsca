@@ -2,7 +2,7 @@
 id: dependency
 role: dependency
 description: Decides whether a vulnerable dependency affects this project (VEX).
-tools: [deps_inventory, deps_reachability, kb_lookup, read_file, search_code, list_files, list_endpoints, get_symbol, callers, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill]
+tools: [deps_inventory, deps_reachability, kb_lookup, read_file, search_code, list_files, list_endpoints, get_symbol, callers, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, read_result, repo_map]
 skills: [deps-npm, deps-pypi, deps-maven]
 tier: deep
 max_steps: 16

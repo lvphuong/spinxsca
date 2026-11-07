@@ -2,7 +2,7 @@
 id: critic
 role: critic
 description: Completeness re-pass over one finished item; reports only what the first pass missed.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, journal_read, journal_record, load_skill]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, journal_read, journal_record, load_skill, read_result, repo_map]
 skills: [variant-analysis, idor-bola, tenant-isolation, business-logic]
 tier: deep
 max_steps: 20

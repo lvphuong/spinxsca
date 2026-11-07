@@ -6,6 +6,7 @@ import {
   type Investigator,
   type ResourceMatrix,
   renderCensus,
+  renderDigest,
   renderGroup,
   type SourceTree,
 } from '@spinxsca/core';
@@ -16,6 +17,7 @@ import {
   type GroundTruth,
   type InvestigationPacket,
   InvestigationResult,
+  InvestigationResultLite,
   type Location,
   ReconDeliverable,
   ThreatModel,
@@ -33,14 +35,20 @@ import {
   validateGroundTruth,
 } from '../ground-truth';
 import { costOf } from '../llm/pricing';
-import type { Effort, LlmProvider } from '../llm/types';
+import type { Effort, LlmProvider, ProviderCapabilities } from '../llm/types';
 import type { PromptBundle } from '../prompts/bundle';
 import { runLimited } from '../runtime/concurrency';
+import { contextBudgetFor } from '../runtime/context-budget';
 import { type AgentBudget, runAgent } from '../runtime/loop';
+import { promptBudgetFor } from '../runtime/prompt-budget';
+import { llmSummarizer } from '../runtime/summarizer';
+import { DEFAULT_BUDGET } from '../runtime/types';
 import { createCensusTools } from '../tools/census-tools';
 import { checkCitations, createCodeTools } from '../tools/code-tools';
 import { createGraphTools } from '../tools/graph-tools';
+import { createRepoMapTool } from '../tools/repo-map-tool';
 import { EXPLAIN_POLICY_VERSION, toRecord } from './explainer';
+import { liftLiteResult, useLiteDeliverables } from './lite';
 
 export interface ReconOptions {
   /** Recon-first flow (ADR-049); false restores the planner-only flow. */
@@ -64,9 +72,12 @@ export interface AgentInvestigatorOptions {
   recon?: ReconOptions;
   /** Operator context pack (ADR-051); the subject's context wins when both are set. */
   context?: AiContextConfig;
+  /** Model writing compaction summaries (ADR-056); the deterministic summary is used when absent. */
+  summarizeProvider?: () => LlmProvider;
 }
 
-type Role = 'investigator' | 'auditor' | 'critic';
+export type InvestigationRole = 'investigator' | 'auditor' | 'critic' | 'mapper';
+type Role = InvestigationRole;
 type RoleOutcome = {
   run?: AgentRunRecord;
   output?: InvestigationResult;
@@ -87,9 +98,11 @@ const CRITIC_CONTEXT_CAP = 12_000;
  */
 export class AgentInvestigator implements Investigator {
   readonly info: Investigator['info'];
+  private readonly caps: ProviderCapabilities;
 
   constructor(private readonly options: AgentInvestigatorOptions) {
     const provider = options.provider();
+    this.caps = provider.capabilities();
     this.info = {
       provider: provider.id,
       model: provider.model,
@@ -119,12 +132,19 @@ export class AgentInvestigator implements Investigator {
       ...createCodeTools(ctx),
       ...(subject.graph ? createGraphTools(subject.graph) : []),
       ...(matrix ? createCensusTools(matrix) : []),
+      ...(subject.digest ? [createRepoMapTool(subject.digest)] : []),
     ];
     const remaining = () => Math.max(0, options.maxCostUsd - cost);
+    // Prompt blocks are sized from the model's window (ADR-053), not from constants tuned for 200k.
+    const pb = promptBudgetFor(contextBudgetFor(this.caps, DEFAULT_BUDGET), 'investigator');
+    const summarizer = this.options.summarizeProvider
+      ? llmSummarizer(this.options.summarizeProvider, { system: this.options.prompts.render('summarize') })
+      : undefined;
     const common = {
       tools,
       ...(this.options.effort ? { effort: this.options.effort } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(summarizer ? { summarizer } : {}),
       scanId: subject.scan.scanId,
       costOf,
     };
@@ -143,7 +163,8 @@ export class AgentInvestigator implements Investigator {
           )}${subject.focus.endpointIds.length ? `\nAffected endpoints: ${subject.focus.endpointIds.join(', ')}` : ''}`
       : '';
     const operatorContext = renderOperatorContext(context);
-    const census = matrix ? renderCensus(matrix) : '';
+    const census = matrix ? renderCensus(matrix, { maxChars: pb.census }) : '';
+    const digest = subject.digest ? renderDigest(subject.digest, { depth: 2, maxChars: pb.digest }) : '';
     const censusJsonBlock = matrix ? `\n<census_json>\n${censusJsonOf(matrix)}\n</census_json>` : '';
     const stats = `Files: ${subject.snapshotPaths.length}. Endpoints discovered: ${subject.graph?.endpoints().length ?? 'unknown (no index)'}.`;
 
@@ -183,6 +204,7 @@ export class AgentInvestigator implements Investigator {
           'Reconnoitre this codebase: classify it, build the threat model and packets, and extract the ground truth.',
           '',
           stats,
+          digest,
           '',
           `Scanner findings already recorded:\n${scannerSummary}${focus}`,
           operatorContext,
@@ -277,7 +299,7 @@ export class AgentInvestigator implements Investigator {
       return groups.length
         ? `Census rows for your entry points (heuristic evidence, not findings):\n${groups.map(renderGroup).join('\n\n')}`.slice(
             0,
-            3000,
+            pb.census,
           )
         : '';
     };
@@ -291,27 +313,34 @@ export class AgentInvestigator implements Investigator {
       if (remaining() <= 0) return { drafts: [], deferred: [`${label}: cost budget exhausted`], infra: [] };
       const provider = this.options.provider();
       const started = new Date().toISOString();
-      const result = await runAgent({
+      const validateFull = async (r: InvestigationResult) => [
+        ...(await checkCitations(
+          ctx,
+          r.findings.flatMap((f) => f.locations),
+        )),
+        ...r.findings
+          .filter((f) => f.locations.filter((l) => l.role === 'primary').length !== 1)
+          .map((f) => `finding "${f.title}" must have exactly one primary location`),
+        ...(slice ? closedEndedProblems(r, slice) : []),
+      ];
+      // Small or prompted-tool models get the lite deliverable (ADR-054); the host lifts it.
+      const lite = useLiteDeliverables(provider.capabilities());
+      const description = 'Submit the findings of this investigation. Call exactly once.';
+      const submit = lite
+        ? {
+            name: 'submit_investigation',
+            description,
+            output: InvestigationResultLite,
+            validate: (r: InvestigationResultLite) => validateFull(liftLiteResult(r)),
+          }
+        : { name: 'submit_investigation', description, output: InvestigationResult, validate: validateFull };
+      const raw = await runAgent<InvestigationResult | InvestigationResultLite>({
         ...common,
         role,
         provider,
         system: this.options.prompts.render(role, vars),
         prompt,
-        submit: {
-          name: 'submit_investigation',
-          description: 'Submit the findings of this investigation. Call exactly once.',
-          output: InvestigationResult,
-          validate: async (r) => [
-            ...(await checkCitations(
-              ctx,
-              r.findings.flatMap((f) => f.locations),
-            )),
-            ...r.findings
-              .filter((f) => f.locations.filter((l) => l.role === 'primary').length !== 1)
-              .map((f) => `finding "${f.title}" must have exactly one primary location`),
-            ...(slice ? closedEndedProblems(r, slice) : []),
-          ],
-        },
+        submit: submit as never,
         budget: {
           maxSteps: role === 'critic' ? 20 : 30,
           maxToolCalls: role === 'critic' ? 50 : 80,
@@ -321,7 +350,15 @@ export class AgentInvestigator implements Investigator {
         },
         maxCostUsd: remaining(),
       });
-      const run = await record(role, provider, started, result);
+      const result = {
+        ...raw,
+        output: raw.output
+          ? lite
+            ? liftLiteResult(raw.output as InvestigationResultLite)
+            : (raw.output as InvestigationResult)
+          : undefined,
+      };
+      const run = await record(role, provider, started, raw);
       if (!result.output) {
         return {
           run,
@@ -343,7 +380,7 @@ export class AgentInvestigator implements Investigator {
       [
         `Investigate this packet.\n\n<packet>\n${JSON.stringify(packet, null, 2)}\n</packet>`,
         `Threat model summary (untrusted, written by another reviewer):\n${summary}`,
-        renderGroundTruth(slices.get(packet.packetId) ?? groundTruth),
+        renderGroundTruth(slices.get(packet.packetId) ?? groundTruth, { maxChars: pb.groundTruth }),
         censusFor(packet.entryPoints.map((e) => e.path)),
         operatorContext,
         `Scanner findings already recorded:\n${scannerSummary}${focus}`,
@@ -417,7 +454,7 @@ export class AgentInvestigator implements Investigator {
             'critic',
             [
               `Completeness re-pass ${pass} over this packet.\n\n<packet>\n${JSON.stringify(packet, null, 2)}\n</packet>`,
-              renderGroundTruth(slices.get(packet.packetId) ?? groundTruth),
+              renderGroundTruth(slices.get(packet.packetId) ?? groundTruth, { maxChars: pb.groundTruth }),
               `Already reported for this packet (do NOT repeat):\n${reported}`,
               `Checklist and hunt log produced so far:\n${log}`,
               censusFor(packet.entryPoints.map((e) => e.path)),
@@ -485,7 +522,7 @@ function censusJsonOf(matrix: ResourceMatrix): string {
   });
 }
 
-function toDraft(finding: AiFinding, role: Role): CandidateDraft {
+export function toDraft(finding: AiFinding, role: InvestigationRole): CandidateDraft {
   const locations: Location[] = finding.locations.map((l) => ({
     path: l.path,
     startLine: l.startLine,

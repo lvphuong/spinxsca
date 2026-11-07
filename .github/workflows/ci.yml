@@ -51,6 +51,8 @@ jobs:
         run: pnpm spinxsca eval --suite internal --ai standard --ai-provider scripted --no-stability --case 003-idor-nest --out evals/results/ci-logic-internal
       - name: Governance evaluation (decision matrix)
         run: pnpm spinxsca eval --suite governance
+      - name: Evaluate sharded investigation (scale suite, scripted)
+        run: pnpm spinxsca eval --suite scale --ai standard --ai-provider scripted --out evals/results/ci-scale
       - name: Autonomous review gates (scripted provider, no API calls)
         run: pnpm spinxsca eval --suite ai --ai-provider scripted --out evals/results/ci-autonomy
       - name: Desktop app (typecheck, unit tests)

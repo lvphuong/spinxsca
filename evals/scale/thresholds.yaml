@@ -1,0 +1,10 @@
+# Acceptance thresholds for `spinxsca eval --suite scale --ai standard` (ADR-055, docs/architecture/10).
+# The case is generated (see 000-synthetic/case.yaml `generator`), so the suite runs offline and
+# measures the sharded investigation: planted-bug recall, shard counts and wall time.
+# Recall under the scripted map provider only covers the planted kinds its signals can see
+# (sibling without scope, raw SQL, path join); tenant filters and fail-open auth need a real model.
+phase: 7
+ai_level: standard
+precision_min: 0.8
+recall_min: 0.5
+identity_stability_min: 0.95

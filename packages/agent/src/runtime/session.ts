@@ -10,8 +10,10 @@ import {
   type Usage,
   ZERO_USAGE,
 } from '../llm/types';
-import { type CompactionOptions, compactView } from './compaction';
+import { type CompactionOptions, compactionFor, compactOutbound } from './compaction';
+import { clampMaxTokens, contextBudgetFor } from './context-budget';
 import { PlainToolExecutor, type ToolExecutor, type ToolOutcome, type ToolUse } from './executor';
+import { createReadResultTool, MemoryResultStore, READ_RESULT_TOOL, type ResultStore } from './result-store';
 import { type AgentTool, formatIssues, type SubmitTool, toolSpec } from './tools';
 import { MemorySessionStore, messagesFrom, type SessionStore } from './transcript';
 import { type AgentBudget, type AgentRunResult, type AgentStatus, type AgentStep, DEFAULT_BUDGET } from './types';
@@ -43,6 +45,10 @@ export interface SessionOptions<O> {
   /** Wall-clock deadline (epoch ms). */
   deadline?: number;
   compaction?: CompactionOptions;
+  /** Store for tool results beyond the inline budget (ADR-056); session memory when absent. */
+  resultStore?: ResultStore;
+  /** Model-written compaction summary (ADR-056); deterministic summary when absent or failing. */
+  summarizer?: CompactionOptions['summarize'];
   now?: () => Date;
 }
 
@@ -58,6 +64,9 @@ export interface SessionResult<O> extends Omit<AgentRunResult<O>, 'status'> {
 
 const MAX_NUDGES = 2;
 const MAX_TURN_RETRIES = 2;
+const MAX_CONTEXT_COLLAPSES = 2;
+const MAX_PARSE_REPAIRS = 2;
+const MAX_LENGTH_RECOVERIES = 2;
 
 /**
  * Durable, governed tool-use session (ADR-042). Same contract as the minimal loop (append-only
@@ -67,14 +76,31 @@ const MAX_TURN_RETRIES = 2;
  */
 export async function runAgentSession<O>(options: SessionOptions<O>): Promise<SessionResult<O>> {
   const budget = { ...DEFAULT_BUDGET, ...options.budget };
+  // The provider's window sizes compaction and max_tokens (ADR-053); compaction is always on.
+  const ctxBudget = contextBudgetFor(options.provider.capabilities(), budget);
+  let compaction: CompactionOptions = {
+    ...(options.compaction ?? compactionFor(ctxBudget)),
+    ...(options.summarizer ? { summarize: options.summarizer } : {}),
+  };
+  let compactions = 0;
+  let collapses = 0;
+  let parseRepairs = 0;
+  let lengthRecoveries = 0;
   const store = options.store ?? new MemorySessionStore();
-  const executor = options.executor ?? new PlainToolExecutor(options.tools);
+  // Large tool results leave the window (ADR-056): the default executor stores them and offers read_result.
+  const results = options.resultStore ?? new MemoryResultStore();
+  const tools: readonly AgentTool[] =
+    options.executor || options.tools.some((t) => t.name === READ_RESULT_TOOL)
+      ? options.tools
+      : [...options.tools, createReadResultTool(results, ctxBudget.inlineResultChars)];
+  const executor =
+    options.executor ?? new PlainToolExecutor(tools, { inlineChars: ctxBudget.inlineResultChars, store: results });
   const now = options.now ?? (() => new Date());
-  const toolNames = new Set(options.tools.map((t) => t.name));
+  const toolNames = new Set(tools.map((t) => t.name));
   if (toolNames.has(options.submit.name))
     throw new Error(`tool name ${options.submit.name} is reserved for submission`);
   const specs = [
-    ...options.tools.map((t) => toolSpec(t.name, t.description, t.input)),
+    ...tools.map((t) => toolSpec(t.name, t.description, t.input)),
     // The deliverable is a large nested object: buffered input lets the server repair malformed JSON
     // into a value the schema check can reject with feedback, instead of a turn that fails on retry.
     { ...toolSpec(options.submit.name, options.submit.description, options.submit.output), eagerInput: false },
@@ -144,6 +170,7 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
     ...(cost !== undefined ? { costUsd: cost } : {}),
     models: [...models],
     resumed,
+    compactions,
     ...extra,
   });
 
@@ -172,7 +199,10 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
       }
       const guard = await options.budgetGuard?.();
       if (guard) return finish('BUDGET_EXHAUSTED', { error: guard });
-      const outbound = options.compaction ? await compactView(messages, options.compaction) : messages;
+      const view = await compactOutbound(messages, compaction, { system: options.system, tools: specs });
+      if (view.summarized) compactions++;
+      const outbound = view.messages;
+      const estimatedInput = view.estimatedTokens;
       let result: Awaited<ReturnType<LlmProvider['complete']>>;
       try {
         result = await options.provider.complete(
@@ -180,7 +210,8 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
             system: options.system,
             messages: outbound,
             tools: specs,
-            maxTokens: budget.maxOutputTokens,
+            maxTokens: clampMaxTokens(ctxBudget, estimatedInput),
+            toolChoice: nudges > 0 ? 'required' : 'auto',
             ...(options.effort ? { effort: options.effort } : {}),
             metadata: { role: options.role, ...(options.scanId ? { scanId: options.scanId } : {}) },
           },
@@ -189,7 +220,36 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
         retries = 0;
       } catch (err) {
         if (options.signal?.aborted) return finish('CANCELLED');
-        if (err instanceof RetryableTurnError && retries++ < MAX_TURN_RETRIES) continue;
+        if (err instanceof RetryableTurnError) {
+          if (err.kind === 'context' && collapses++ < MAX_CONTEXT_COLLAPSES) {
+            // The request did not fit: tighten the view until the reported gap (or half) is gone.
+            const gap = err.detail?.actual && err.detail?.limit ? err.detail.actual - err.detail.limit : undefined;
+            const target = gap ? estimatedInput - gap - ctxBudget.buffer : Math.floor(estimatedInput * 0.5);
+            compaction = {
+              ...compaction,
+              thresholdTokens: Math.max(512, Math.min(compaction.thresholdTokens, target)),
+              keepTurns: Math.max(1, compaction.keepTurns - 2),
+              microcompact: { keepRecent: 2, tools: compaction.microcompact?.tools ?? new Set<string>() },
+            };
+            continue;
+          }
+          if (err.kind === 'parse' && err.rawText !== undefined && parseRepairs++ < MAX_PARSE_REPAIRS) {
+            // Show the model its own unusable reply and ask for a corrected one instead of an identical retry.
+            const bad: ContentBlock[] = [{ type: 'text', text: err.rawText.slice(0, 4_000) || '(empty reply)' }];
+            messages.push({ role: 'assistant', content: bad });
+            await checkpoint('turn', bad, { stopReason: 'other' });
+            const fix: ContentBlock[] = [
+              {
+                type: 'text',
+                text: `Your previous reply could not be used: ${err.message}. Reply again and call exactly one tool with valid JSON arguments.`,
+              },
+            ];
+            messages.push({ role: 'user', content: fix });
+            await checkpoint('results', fix);
+            continue;
+          }
+          if (err.kind === 'transient' && retries++ < MAX_TURN_RETRIES) continue;
+        }
         return finish('FAILED', { error: err instanceof Error ? err.message : String(err) });
       }
       usage = addUsage(usage, result.usage);
@@ -204,6 +264,7 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
         usage: result.usage,
         toolCalls: [],
         fallbacks: result.fallbacks,
+        contextTokens: estimatedInput,
       };
       steps.push(step);
       if (result.stopReason === 'refusal') {
@@ -230,6 +291,18 @@ export async function runAgentSession<O>(options: SessionOptions<O>): Promise<Se
     if (toolUses.length === 0) {
       options.onStep?.(step);
       if (stopReason === 'pause_turn') continue;
+      if (stopReason === 'max_tokens' && lengthRecoveries++ < MAX_LENGTH_RECOVERIES) {
+        // The answer was cut, not refused: ask the model to continue in smaller pieces (no nudge spent).
+        const resume: ContentBlock[] = [
+          {
+            type: 'text',
+            text: 'Output token limit hit. Resume directly without a recap; break the remaining work into smaller tool calls and call the tool when ready.',
+          },
+        ];
+        messages.push({ role: 'user', content: resume });
+        await checkpoint('results', resume);
+        continue;
+      }
       if (nudges++ >= MAX_NUDGES) return finish('FAILED', { error: 'model ended without calling the submit tool' });
       const nudge: ContentBlock[] = [
         { type: 'text', text: `Finish by calling the \`${options.submit.name}\` tool with your result.` },

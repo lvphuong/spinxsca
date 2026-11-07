@@ -21,6 +21,7 @@ import type { LoadedConfig } from '../config';
 import { openEngine, scanDeps } from '../engine';
 import { CliError } from '../ui';
 import { type CaseGrade, findingLayer, gradeCase, type ReportedFinding, truthLayer } from './grader';
+import { generateScaleFixture } from './scale-fixture';
 
 export interface SuiteOptions {
   suiteDir: string;
@@ -52,7 +53,11 @@ export interface CaseResult {
     costUsd: number;
     coverage?: GroundTruthCoverage;
     deferred?: string[];
+    /** Sharded investigation (ADR-055). */
+    shards?: { planned: number; completed: number; failed: number; reused: number; overCap: number };
   };
+  /** Generated case size and resource use (scale suite). */
+  scale?: { files: number; loc: number; planted: number; peakRssMb: number };
   scanIds: string[];
   durationMs: number;
   error?: string;
@@ -250,16 +255,41 @@ export async function runSuite(options: SuiteOptions): Promise<SuiteResult> {
 
 async function runCase(caseDir: string, phase: number, kbDir: string, options: SuiteOptions): Promise<CaseResult> {
   const started = Date.now();
-  const evalCase = EvalCase.parse(parse(readFileSync(join(caseDir, 'case.yaml'), 'utf8')));
+  let evalCase = EvalCase.parse(parse(readFileSync(join(caseDir, 'case.yaml'), 'utf8')));
   const progress = (message: string) => options.onProgress?.(evalCase.id, message);
   const work = mkdtempSync(join(tmpdir(), 'spinxsca-eval-'));
   const result: CaseResult = { id: evalCase.id, title: evalCase.title, findings: [], scanIds: [], durationMs: 0 };
+  let peakRss = process.memoryUsage().rss;
+  const sampler = setInterval(() => {
+    peakRss = Math.max(peakRss, process.memoryUsage().rss);
+  }, 500);
   try {
     const sourceDir = join(work, 'src');
-    cpSync(join(caseDir, evalCase.source), sourceDir, {
-      recursive: true,
-      filter: (path) => !path.split(sep).includes('.spinxsca') && !path.endsWith('case.yaml'),
-    });
+    if (evalCase.generator) {
+      // Generated case (ADR-055): the fixture and its ground truth come from the generator, not the repo.
+      progress(`generating ${evalCase.generator.files} files`);
+      const fixture = generateScaleFixture(sourceDir, evalCase.generator);
+      evalCase = EvalCase.parse({
+        ...evalCase,
+        findings: fixture.planted.map((p) => ({
+          id: p.id,
+          category: p.category,
+          cwe: p.cwe,
+          path: p.path,
+          lines: p.lines,
+          detectable_by: ['ai'],
+          min_phase: phase,
+          family: p.family,
+        })),
+        negatives: fixture.negatives,
+      });
+      result.scale = { files: fixture.files, loc: fixture.loc, planted: fixture.planted.length, peakRssMb: 0 };
+    } else {
+      cpSync(join(caseDir, evalCase.source), sourceDir, {
+        recursive: true,
+        filter: (path) => !path.split(sep).includes('.spinxsca') && !path.endsWith('case.yaml'),
+      });
+    }
     const engine = openEngine({
       scanRoot: sourceDir,
       stateDir: join(work, 'state'),
@@ -318,9 +348,25 @@ async function runCase(caseDir: string, phase: number, kbDir: string, options: S
             ? {
                 ai: {
                   level,
-                  maxFindings: 10,
+                  maxFindings: evalCase.generator ? 200 : 10,
                   maxCostUsd: aiOpts.maxCostUsdPerFinding * (investigates ? 5 : 1),
                   ...(context ? { context } : {}),
+                  // Generated cases always shard (that is what they measure); other suites follow the options.
+                  ...(evalCase.generator
+                    ? { sharding: { enabled: 'on' as const } }
+                    : aiOpts.sharding
+                      ? {
+                          sharding: {
+                            enabled: aiOpts.sharding.enabled,
+                            maxShards: aiOpts.sharding.max_shards,
+                            maxFilesPerShard: aiOpts.sharding.max_files_per_shard,
+                            tokenBudgetRatio: aiOpts.sharding.token_budget_ratio,
+                            groupDepth: aiOpts.sharding.group_depth,
+                            includeZeroSignal: aiOpts.sharding.include_zero_signal,
+                          },
+                        }
+                      : {}),
+                  ...(aiOpts.parallel?.map_workers ? { mapWorkers: aiOpts.parallel.map_workers } : {}),
                 },
               }
             : {}),
@@ -334,6 +380,7 @@ async function runCase(caseDir: string, phase: number, kbDir: string, options: S
             failures: outcome.ai.failures,
             costUsd: outcome.ai.costUsd,
             ...(outcome.ai.coverage ? { coverage: outcome.ai.coverage } : {}),
+            ...(outcome.ai.shards ? { shards: outcome.ai.shards } : {}),
           };
         return buildReportModel(engine.repo, outcome.scan.scanId);
       };
@@ -372,6 +419,8 @@ async function runCase(caseDir: string, phase: number, kbDir: string, options: S
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
   } finally {
+    clearInterval(sampler);
+    if (result.scale) result.scale.peakRssMb = Math.round(Math.max(peakRss, process.memoryUsage().rss) / 1_048_576);
     rmSync(work, { recursive: true, force: true });
     result.durationMs = Date.now() - started;
   }

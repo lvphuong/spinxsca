@@ -1,4 +1,5 @@
 import type { ContentBlock } from '../llm/types';
+import { boundOutput, type ResultStore } from './result-store';
 import { type AgentTool, formatIssues } from './tools';
 
 export type ToolUse = Extract<ContentBlock, { type: 'tool_use' }>;
@@ -30,11 +31,20 @@ export function capOutput(text: string, limit = DEFAULT_OUTPUT_LIMIT): string {
   return `${text.slice(0, limit)}\n[output truncated: ${text.length - limit} more characters]`;
 }
 
-/** Ungoverned executor used by the fixed-pipeline roles (explain, investigate): validate and run. */
+export interface PlainExecutorOptions {
+  /** Characters of a result shown inline; the rest goes to the store (ADR-056). */
+  inlineChars?: number;
+  store?: ResultStore;
+}
+
+/** Ungoverned executor used by the fixed-pipeline roles (explain, investigate): validate, run, bound the output. */
 export class PlainToolExecutor implements ToolExecutor {
   private readonly tools: Map<string, AgentTool>;
 
-  constructor(tools: readonly AgentTool[]) {
+  constructor(
+    tools: readonly AgentTool[],
+    private readonly options: PlainExecutorOptions = {},
+  ) {
     this.tools = new Map(tools.map((t) => [t.name, t]));
   }
 
@@ -50,9 +60,19 @@ export class PlainToolExecutor implements ToolExecutor {
       };
     }
     try {
+      const raw = await tool.run(parsed.data, { ...(ctx.signal ? { signal: ctx.signal } : {}) });
+      const inline = Math.min(
+        tool.outputLimit ?? DEFAULT_OUTPUT_LIMIT,
+        this.options.inlineChars ?? DEFAULT_OUTPUT_LIMIT,
+      );
       return {
         kind: 'result',
-        content: await tool.run(parsed.data, { ...(ctx.signal ? { signal: ctx.signal } : {}) }),
+        content: await boundOutput(raw, {
+          inlineChars: inline,
+          ...(this.options.store ? { store: this.options.store } : {}),
+          tool: call.name,
+          toolUseId: call.id,
+        }),
       };
     } catch (err) {
       return {

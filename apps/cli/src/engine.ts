@@ -10,6 +10,7 @@ import {
   type FindingExplainer,
   type Investigator,
   type Logger,
+  type MapReduceInvestigator,
   type ProjectAssistant,
   type Remediator,
   type ReviewPortContext,
@@ -70,6 +71,7 @@ export interface Engine {
   assistant?: ProjectAssistant;
   investigator?: Investigator;
   remediator?: Remediator;
+  mapReduce?: MapReduceInvestigator;
   /** Review case store (ADR-044): the local state database, or the control plane for workers. */
   cases?: CaseRepository;
   logger: Logger;
@@ -132,7 +134,13 @@ export function openEngine(options: EngineOptions): Engine {
     codeIntel: new CodeIntelService(stateDir),
     ...(options.cases ? { cases: options.cases } : local ? { cases: local.cases() } : {}),
     ...(ai
-      ? { explainer: ai.explainer, assistant: ai.assistant, investigator: ai.investigator, remediator: ai.remediator }
+      ? {
+          explainer: ai.explainer,
+          assistant: ai.assistant,
+          investigator: ai.investigator,
+          remediator: ai.remediator,
+          ...(ai.mapReduce ? { mapReduce: ai.mapReduce } : {}),
+        }
       : {}),
     logger: options.logger,
     close: () => {
@@ -159,6 +167,7 @@ export function scanDeps(
     codeIntel: engine.codeIntel,
     ...(engine.explainer ? { explainer: engine.explainer } : {}),
     ...(engine.investigator ? { investigator: engine.investigator } : {}),
+    ...(engine.mapReduce ? { mapReduce: engine.mapReduce } : {}),
     ...(review ? { reviewer: review.reviewer, reviewPorts: review.ports } : {}),
   };
 }

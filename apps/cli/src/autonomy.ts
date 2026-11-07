@@ -1,14 +1,12 @@
 import { join } from 'node:path';
 import {
   AgentAutonomousReviewer,
-  AnthropicProvider,
   type AutonomyConfig,
   type CaseEvent,
   compileDataPolicy,
-  DEFAULT_ANTHROPIC_MODEL,
   type HumanApprover,
   type LlmProvider,
-  OpenAICompatibleProvider,
+  type RoleKey,
   scriptedReviewProvider,
 } from '@spinxsca/agent';
 import { dependencyUsage } from '@spinxsca/code-intel';
@@ -26,6 +24,7 @@ import type { ReviewDefaults, ReviewRunOptions, SpinxscaConfig } from '@spinxsca
 import type { AiExplainOptions } from './ai';
 import type { LoadedConfig } from './config';
 import type { Engine } from './engine';
+import { registryFor } from './models';
 import { resolvePromptsDir } from './rules';
 import { resolvePlaybooksDir } from './rules-playbooks';
 import { CliError } from './ui';
@@ -94,34 +93,30 @@ export function autonomyConfig(loaded: LoadedConfig, flags: ReviewFlags, maxCost
       census: config.ai?.recon?.census ?? true,
     },
     ...(config.ai?.context ? { context: config.ai.context } : {}),
+    // Large repositories (ADR-055): shard the board; explore sub-agent parallelism from ai.parallel.
+    ...(config.ai?.sharding
+      ? {
+          sharding: {
+            enabled: config.ai.sharding.enabled,
+            maxShards: config.ai.sharding.max_shards,
+            maxFilesPerShard: config.ai.sharding.max_files_per_shard,
+            groupDepth: config.ai.sharding.group_depth,
+          },
+        }
+      : {}),
+    ...(config.ai?.parallel?.explore ? { exploreParallel: config.ai.parallel.explore } : {}),
   };
 }
 
-export function providerFor(ai: AiExplainOptions, model?: string): () => LlmProvider {
+/**
+ * Provider for a role (ADR-053). `model` overrides the model id of the chosen alias (legacy
+ * `reviewer_model`): the alias keeps its endpoint and limiter, only the model name changes.
+ */
+export function providerFor(ai: AiExplainOptions, model?: string, role: RoleKey = 'deep'): () => LlmProvider {
   if (ai.provider === 'scripted') return scriptedReviewProvider;
-  if (ai.provider === 'openai-compatible') {
-    if (!ai.baseUrl || !ai.model) throw new CliError('ai.provider openai-compatible needs ai.base_url and ai.model');
-    const apiKey = process.env[ai.apiKeyEnv ?? 'SPINXSCA_LLM_API_KEY'];
-    const p = new OpenAICompatibleProvider({
-      baseUrl: ai.baseUrl,
-      model: model ?? ai.model,
-      ...(apiKey ? { apiKey } : {}),
-    });
-    return () => p;
-  }
-  let p: AnthropicProvider;
-  try {
-    p = new AnthropicProvider({
-      model: model ?? ai.model ?? DEFAULT_ANTHROPIC_MODEL,
-      effort: ai.effort,
-      fallbacks: ai.refusalFallback,
-    });
-  } catch (err) {
-    throw new CliError(
-      `Claude API client could not be created (${(err as Error).message}). Set ANTHROPIC_API_KEY or run \`ant auth login\`.`,
-    );
-  }
-  return () => p;
+  if (!model) return registryFor(ai, () => scriptedReviewProvider()).for(role);
+  const override: AiExplainOptions = { ...ai, model, forceSingleModel: true };
+  return registryFor(override, () => scriptedReviewProvider()).for(role);
 }
 
 export function createReviewer(o: {
@@ -137,11 +132,19 @@ export function createReviewer(o: {
   /** Run options the operator chose (recorded on the case so a resume reuses them, ADR-052). */
   runOptions?: ReviewRunOptions;
 }): AgentAutonomousReviewer {
-  const provider = o.wrapProvider ? o.wrapProvider(providerFor(o.ai)) : providerFor(o.ai);
+  const wrap = o.wrapProvider ?? ((p: () => LlmProvider) => p);
+  const provider = wrap(providerFor(o.ai));
   const reviewerModel = o.loaded.config.ai?.autonomy?.reviewer_model;
+  const registry = o.ai.provider === 'scripted' ? undefined : registryFor(o.ai);
+  const judgeProvider = reviewerModel
+    ? wrap(providerFor(o.ai, reviewerModel, 'judge'))
+    : registry?.routed('judge') || registry?.routed('fast')
+      ? wrap(providerFor(o.ai, undefined, 'judge'))
+      : provider;
   return new AgentAutonomousReviewer({
     provider,
-    judgeProvider: reviewerModel ? providerFor(o.ai, reviewerModel) : provider,
+    ...(registry?.routed('fast') ? { fastProvider: wrap(providerFor(o.ai, undefined, 'fast')) } : {}),
+    judgeProvider,
     promptsDir: resolvePromptsDir(),
     playbooksDir: resolvePlaybooksDir(),
     config: o.config,

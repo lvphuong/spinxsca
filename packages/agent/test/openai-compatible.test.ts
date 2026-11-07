@@ -144,7 +144,12 @@ describe('OpenAI-compatible provider', () => {
     const investigator = new AgentInvestigator({
       recon: { enabled: false },
       provider: () =>
-        new OpenAICompatibleProvider({ baseUrl: 'http://llm/v1', model: 'local-model', fetch: fakeFetch }),
+        new OpenAICompatibleProvider({
+          baseUrl: 'http://llm/v1',
+          model: 'local-model',
+          fetch: fakeFetch,
+          profile: { contextWindow: 128_000, toolMode: 'native' },
+        }),
       prompts: loadPromptBundle(PROMPTS),
     });
     const source: SourceTree = {

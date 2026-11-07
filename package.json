@@ -18,6 +18,7 @@
     "lint:fix": "biome check --write .",
     "eval": "tsx apps/cli/src/index.ts eval --suite internal",
     "eval:logic": "tsx apps/cli/src/index.ts eval --suite logic --ai standard --ai-provider scripted",
+    "eval:scale": "tsx apps/cli/src/index.ts eval --suite scale --ai standard --ai-provider scripted",
     "schemas:export": "pnpm --filter @spinxsca/schemas run export",
     "db:generate": "pnpm --filter @spinxsca/storage run db:generate",
     "images:pin": "tsx scripts/pin-images.ts",

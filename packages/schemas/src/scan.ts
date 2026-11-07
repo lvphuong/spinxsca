@@ -47,7 +47,17 @@ export const ScanRun = z.object({
 export type ScanRun = z.infer<typeof ScanRun>;
 
 /** PROBE: an analyzer run requested by an agent; never part of the coverage oracle (ADR-043). */
-export const TaskKind = z.enum(['SNAPSHOT', 'SCANNER', 'RECONCILE', 'REPORT', 'AGENT', 'INDEX', 'IMPACT', 'PROBE']);
+export const TaskKind = z.enum([
+  'SNAPSHOT',
+  'SCANNER',
+  'RECONCILE',
+  'REPORT',
+  'AGENT',
+  'INDEX',
+  'IMPACT',
+  'PROBE',
+  'SHARD_PLAN',
+]);
 export type TaskKind = z.infer<typeof TaskKind>;
 
 export const ScanTask = z.object({

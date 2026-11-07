@@ -9,7 +9,9 @@ và hỗ trợ khắc phục dựa trên bằng chứng. Thiết kế và lộ t
 - **Rà soát tự chủ (`spinxsca review`, `scan --ai deep`):** một "case" có lead, các persona chuyên trách (validator, dependency, secrets, iac, appsec, exploit, fixer, verifier) làm việc qua tool có kiểu; mọi tool call đi qua policy engine L0–L12 (hard floor, human-only, grant, reviewer model), audit và journal có hash-chain, inbox bền vững cho lần chạy không người trực; PoC L3 trong sandbox không mạng với oracle do host quyết định; sửa lỗi lặp có verifier độc lập và chỉ áp vào repo khi con người duyệt.
 - **VS Code extension** và **desktop app** (`apps/desktop`, Tauri 2, chưa ký).
 
-Kết quả và điểm còn thiếu: [Phase 1](docs/roadmap/phase-1-ket-qua.md), [Phase 2](docs/roadmap/phase-2-ket-qua.md), [Phase 3](docs/roadmap/phase-3-ket-qua.md), [Phase 4](docs/roadmap/phase-4-ket-qua.md).
+- **Model cục bộ và repo lớn (Phase 7):** `ai.models`/`ai.routing` định tuyến vai sang Claude, endpoint OpenAI-compatible (vLLM, LM Studio) hoặc Ollama; `spinxsca ai doctor` đo endpoint và in cấu hình; mọi session tính compaction và `max_tokens` từ context window; repo hàng trăm nghìn dòng được chia shard tất định, điều tra song song (`scan --shards`), tái dùng shard không đổi và gộp bằng reducer chỉ nhìn claim.
+
+Kết quả và điểm còn thiếu: [Phase 1](docs/roadmap/phase-1-ket-qua.md), [Phase 2](docs/roadmap/phase-2-ket-qua.md), [Phase 3](docs/roadmap/phase-3-ket-qua.md), [Phase 4](docs/roadmap/phase-4-ket-qua.md), [Phase 5](docs/roadmap/phase-5-ket-qua.md), [Phase 6](docs/roadmap/phase-6-ket-qua.md), [Phase 7](docs/roadmap/phase-7-ket-qua.md).
 
 ## Yêu cầu
 
@@ -59,6 +61,8 @@ State của dự án nằm ở `<path>/.spinxsca/` (SQLite + artifact content-ad
 | `fix <id> --iterate [n]` | Lặp đề xuất patch với phản hồi re-scan/test đến khi verified |
 | `eval --suite governance` / `eval --suite ai --ai-provider scripted` | Ma trận quyết định policy (178 dòng) / cổng cứng của rà soát tự chủ (không false-confirm, không lộ secret, không side effect) |
 | `eval --suite logic --ai standard [--ai-provider anthropic]` | Suite logic/authorization (IDOR sibling, tenant isolation, race, mass assignment, workflow bypass, fail-open, negative control); đo thêm sibling-sweep recall và invariant coverage; case `live_only` chỉ tính với model thật |
+| `eval --suite scale --ai standard [--ai-provider scripted\|scripted-weak]` | Repo tổng hợp sinh bằng script (300 file trong CI, `scripts/gen-scale-fixture.ts` cho 300k dòng); đo recall lỗi gieo, số shard, thời gian, RSS của điều tra theo shard |
+| `ai doctor --provider ollama\|openai-compatible --model <id> [--base-url]` | Đo endpoint model cục bộ (context window, tool call native/prompted, JSON, tok/s) và in `ai.models`/`ai.routing` khuyến nghị |
 | `export --format sarif\|json\|md\|csv\|cyclonedx\|pr-comment`, `sbom` | Xuất kết quả |
 | `kb sync\|status\|snapshots\|lookup\|import\|export` | Quản lý knowledge base OSV |
 

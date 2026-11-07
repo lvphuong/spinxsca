@@ -2,6 +2,7 @@ import type { SourceTree } from '@spinxsca/core';
 import { applyRedactions, type RedactionSpan, redactSecrets } from '@spinxsca/core';
 import { z } from 'zod';
 import { type AgentTool, defineTool } from '../runtime/tools';
+import { createSearcher, LruLineCache, type Searcher } from './search';
 
 const MAX_READ_LINES = 300;
 const MAX_SEARCH_RESULTS = 50;
@@ -14,6 +15,9 @@ export interface CodeToolContext {
   paths: readonly string[];
   redactions: readonly RedactionSpan[];
   findings?: ReadonlyArray<{ findingId: string; title: string; category: string; location: string }>;
+  /** Shared across the roles of one scan so a large repository is split and cached once (ADR-056). */
+  cache?: LruLineCache;
+  searcher?: Searcher;
 }
 
 /**
@@ -22,10 +26,12 @@ export interface CodeToolContext {
  */
 export function createCodeTools(ctx: CodeToolContext): AgentTool<never>[] {
   const allowed = new Set(ctx.paths);
-  const cache = new Map<string, string[] | undefined>();
+  // Bounded: old files are evicted instead of pinning the whole repository per role instance.
+  const cache = ctx.cache ?? new LruLineCache();
   const linesOf = async (path: string): Promise<string[] | undefined> => {
+    if (!allowed.has(path)) return undefined;
     if (!cache.has(path)) {
-      const text = allowed.has(path) ? await ctx.source.readText(path) : undefined;
+      const text = await ctx.source.readText(path);
       cache.set(
         path,
         text === undefined || text.length > MAX_FILE_BYTES || text.includes('\u0000') ? undefined : text.split(/\r?\n/),
@@ -33,6 +39,7 @@ export function createCodeTools(ctx: CodeToolContext): AgentTool<never>[] {
     }
     return cache.get(path);
   };
+  const searcher = ctx.searcher ?? createSearcher({ root: ctx.source.root, readLines: linesOf, paths: ctx.paths });
   const clean = (path: string, lines: string[], first: number): string[] =>
     applyRedactions(lines, first, path, ctx.redactions).map((l) => redactSecrets(l).text);
 
@@ -58,32 +65,32 @@ export function createCodeTools(ctx: CodeToolContext): AgentTool<never>[] {
 
   const searchCode = defineTool({
     name: 'search_code',
-    description: 'Find lines containing a literal string (not a regular expression) across the snapshot.',
+    description:
+      'Find lines containing a literal string (not a regular expression) across the snapshot. Results are paged: pass offset to continue.',
     input: z.strictObject({
       query: z.string().min(2).max(200),
       path_prefix: z.string().optional().describe('Only search paths starting with this prefix'),
       ignore_case: z.boolean().optional(),
       max_results: z.number().int().positive().max(MAX_SEARCH_RESULTS).optional(),
+      offset: z.number().int().nonnegative().optional().describe('Skip this many matches (paging)'),
     }),
-    run: async ({ query, path_prefix, ignore_case, max_results }) => {
+    run: async ({ query, path_prefix, ignore_case, max_results, offset }) => {
       const limit = max_results ?? 30;
-      const needle = ignore_case ? query.toLowerCase() : query;
-      const hits: string[] = [];
-      for (const path of ctx.paths) {
-        if (path_prefix && !path.startsWith(path_prefix)) continue;
-        const lines = await linesOf(path);
-        if (!lines) continue;
-        for (let i = 0; i < lines.length && hits.length < limit; i++) {
-          const line = lines[i] as string;
-          if ((ignore_case ? line.toLowerCase() : line).includes(needle)) {
-            const [shown] = clean(path, [line], i + 1);
-            hits.push(`${path}:${i + 1}: ${(shown ?? '').trim().slice(0, MAX_LINE_CHARS)}`);
-          }
-        }
-        if (hits.length >= limit) break;
-      }
-      if (hits.length === 0) return 'No matches.';
-      return `<untrusted_repository_content>\n${hits.join('\n')}\n</untrusted_repository_content>`;
+      const result = await searcher.search({
+        query,
+        ...(path_prefix ? { pathPrefix: path_prefix } : {}),
+        ...(ignore_case ? { ignoreCase: true } : {}),
+        limit,
+        ...(offset ? { offset } : {}),
+        allowed,
+      });
+      const hits = result.hits.map((h) => {
+        const [shown] = clean(h.path, [h.text], h.line);
+        return `${h.path}:${h.line}: ${(shown ?? '').trim().slice(0, MAX_LINE_CHARS)}`;
+      });
+      if (hits.length === 0) return offset ? 'No more matches.' : 'No matches.';
+      const next = (offset ?? 0) + hits.length;
+      return `<untrusted_repository_content>\n${hits.join('\n')}\n</untrusted_repository_content>${result.truncated ? `\n… more matches; call again with offset=${next}` : ''}`;
     },
   });
 

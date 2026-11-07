@@ -24,15 +24,34 @@ export interface BoardToolOptions {
   now: () => Date;
 }
 
+const BOARD_STATUS_ORDER: Record<string, number> = { blocked: 0, in_progress: 1, todo: 2, done: 3, cancelled: 4 };
+
 export function summarizeBoard(
   items: readonly WorkItem[],
   verdicts: readonly CaseVerdict[],
   objectives: readonly Objective[],
+  options: { maxItems?: number } = {},
 ): string {
-  const lines = items.map(
+  // Large boards (sharded cases, ADR-055) are summarised: counts by kind and status, then the items
+  // that still need the lead's attention, blocked first.
+  const maxItems = options.maxItems ?? 80;
+  const shown = [...items]
+    .sort((a, b) => (BOARD_STATUS_ORDER[a.status] ?? 9) - (BOARD_STATUS_ORDER[b.status] ?? 9))
+    .slice(0, maxItems);
+  const lines = shown.map(
     (i) =>
       `- ${i.itemId.split(':').pop()} [${i.status}] ${i.kind} → ${i.persona}${i.mandatory ? ' (mandatory)' : ''}: ${i.title}${i.blockedReason ? ` — blocked: ${i.blockedReason}` : ''}`,
   );
+  if (items.length > shown.length) {
+    const counts = new Map<string, number>();
+    for (const i of items) counts.set(`${i.kind}/${i.status}`, (counts.get(`${i.kind}/${i.status}`) ?? 0) + 1);
+    lines.push(
+      `(+${items.length - shown.length} more items not listed; totals: ${[...counts.entries()]
+        .sort()
+        .map(([k, n]) => `${k}=${n}`)
+        .join(', ')})`,
+    );
+  }
   const latest = new Map(verdicts.map((v) => [v.handle, v]));
   const counts = new Map<string, number>();
   for (const v of latest.values()) counts.set(v.verdict, (counts.get(v.verdict) ?? 0) + 1);

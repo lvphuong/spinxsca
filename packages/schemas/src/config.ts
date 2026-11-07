@@ -102,6 +102,71 @@ export const AiContextConfig = z.strictObject({
     .max(30)
     .default([]),
 });
+
+const ModelAlias = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/, 'expected a model alias');
+const RateLimitConfig = z.strictObject({
+  rpm: z.number().int().positive().optional(),
+  tpm: z.number().int().positive().optional(),
+  concurrency: z.number().int().min(1).max(32).optional(),
+});
+
+/** One model endpoint the agent may use (ADR-053). Aliases are routed to roles through `ai.routing`. */
+export const AiModelConfig = z.strictObject({
+  provider: z.enum(['anthropic', 'openai-compatible', 'ollama', 'scripted']),
+  model: z.string().min(1),
+  /** openai-compatible: `http://host:8000/v1`; ollama: `http://host:11434`. */
+  base_url: z.url().optional(),
+  api_key_env: z
+    .string()
+    .regex(/^[A-Z_][A-Z0-9_]*$/)
+    .optional(),
+  /** Context window in tokens; detected from the endpoint or taken from the catalog when absent. */
+  context_window: z.number().int().min(4096).max(2_000_000).optional(),
+  max_output: z.number().int().min(256).max(128_000).optional(),
+  /** `auto` follows the catalog; `prompted` renders tools into the prompt; `none` is single-shot JSON only. */
+  tool_mode: z.enum(['auto', 'native', 'prompted', 'none']).default('auto'),
+  temperature: z.number().min(0).max(2).optional(),
+  /** Ollama only: context length the server loads the model with. */
+  num_ctx: z.number().int().min(2048).optional(),
+  stream: z.boolean().optional(),
+  rate_limit: RateLimitConfig.optional(),
+  tier: z.enum(['deep', 'fast', 'local']).optional(),
+});
+export type AiModelConfig = z.infer<typeof AiModelConfig>;
+
+/** Which alias serves which role; unrouted roles fall back (judge/map/summarize -> fast -> deep). */
+export const AiRoutingConfig = z.strictObject({
+  deep: ModelAlias.optional(),
+  fast: ModelAlias.optional(),
+  judge: ModelAlias.optional(),
+  map: ModelAlias.optional(),
+  reduce: ModelAlias.optional(),
+  summarize: ModelAlias.optional(),
+});
+export type AiRoutingConfig = z.infer<typeof AiRoutingConfig>;
+
+/** Sharded map/reduce for large repositories (ADR-055). */
+export const AiShardingConfig = z.strictObject({
+  /** `auto` shards once the candidate set outgrows one investigation; small repositories keep the packet flow. */
+  enabled: z.enum(['auto', 'on', 'off']).default('auto'),
+  max_shards: z.number().int().min(1).max(512).default(64),
+  max_files_per_shard: z.number().int().min(1).max(200).default(40),
+  /** Share of the map model's effective window one shard may fill with source. */
+  token_budget_ratio: z.number().min(0.1).max(0.6).default(0.35),
+  /** Path segments that form a module (files of one module stay in one shard). */
+  group_depth: z.number().int().min(1).max(6).default(3),
+  /** Also investigate files without any selector, index, census or scanner signal. */
+  include_zero_signal: z.boolean().default(false),
+});
+export type AiShardingConfig = z.infer<typeof AiShardingConfig>;
+
+export const AiParallelConfig = z.strictObject({
+  /** Concurrent shard investigations; bounded by the provider's concurrency limit. */
+  map_workers: z.number().int().min(1).max(16).optional(),
+  /** Concurrent explore sub-agents per role. */
+  explore: z.number().int().min(1).max(8).default(3),
+});
+export type AiParallelConfig = z.infer<typeof AiParallelConfig>;
 export type AiContextConfig = z.infer<typeof AiContextConfig>;
 
 const RemediationConfig = z.strictObject({
@@ -161,7 +226,7 @@ export const SpinxscaConfig = z.strictObject({
   ai: z
     .strictObject({
       level: z.enum(['off', 'explain', 'standard', 'deep']).default('off'),
-      provider: z.enum(['anthropic', 'openai-compatible', 'scripted']).default('anthropic'),
+      provider: z.enum(['anthropic', 'openai-compatible', 'ollama', 'scripted']).default('anthropic'),
       model: z.string().min(1).optional(),
       /** openai-compatible: base URL of the self-hosted endpoint, e.g. http://llm.internal:8000/v1. */
       base_url: z.url().optional(),
@@ -176,7 +241,7 @@ export const SpinxscaConfig = z.strictObject({
           /** Files never sent: excluded from the roles' snapshot and withheld from evidence. */
           exclude_paths: z.array(z.string().min(1)).default([]),
           /** Only these providers may be configured (e.g. ["openai-compatible"] for on-prem only). */
-          allowed_providers: z.array(z.enum(['anthropic', 'openai-compatible', 'scripted'])).optional(),
+          allowed_providers: z.array(z.enum(['anthropic', 'openai-compatible', 'ollama', 'scripted'])).optional(),
         })
         .optional(),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
@@ -195,6 +260,29 @@ export const SpinxscaConfig = z.strictObject({
       validation: ValidationConfig.optional(),
       remediation: RemediationConfig.optional(),
       pricing: PricingConfig.optional(),
+      /** Named model endpoints (ADR-053); absent means one model from provider/model/base_url for every role. */
+      models: z.record(ModelAlias, AiModelConfig).optional(),
+      routing: AiRoutingConfig.optional(),
+      sharding: AiShardingConfig.optional(),
+      parallel: AiParallelConfig.optional(),
+    })
+    .superRefine((ai, ctx) => {
+      for (const [role, alias] of Object.entries(ai.routing ?? {})) {
+        if (alias && !ai.models?.[alias])
+          ctx.addIssue({
+            code: 'custom',
+            path: ['routing', role],
+            message: `ai.routing.${role} names unknown alias "${alias}"`,
+          });
+      }
+      for (const [alias, m] of Object.entries(ai.models ?? {})) {
+        if (m.provider !== 'anthropic' && m.provider !== 'scripted' && !m.base_url)
+          ctx.addIssue({
+            code: 'custom',
+            path: ['models', alias, 'base_url'],
+            message: `ai.models.${alias} (${m.provider}) needs base_url`,
+          });
+      }
     })
     .optional(),
   policy: z

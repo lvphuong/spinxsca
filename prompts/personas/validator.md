@@ -2,7 +2,7 @@
 id: validator
 role: validator
 description: Independently confirms or refutes one finding with evidence.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, kb_lookup, propose_disposition, propose_memory]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, resource_matrix, data_access_sites, get_finding, finding_evidence, journal_read, journal_record, explore, load_skill, shell_exec, kb_lookup, propose_disposition, propose_memory, read_result, repo_map]
 skills: [sqli, command-injection, path-traversal, ssrf, xss, idor-bola, authn-session, deserialization, business-logic, tenant-isolation]
 tier: deep
 max_steps: 20

@@ -64,6 +64,9 @@ export const TOOL_RISK: Readonly<Record<string, RiskClass>> = {
   deps_reachability: 'READ',
   resource_matrix: 'READ',
   data_access_sites: 'READ',
+  // Phase 7 (ADR-056): paged access to large tool results and the repository digest.
+  read_result: 'READ',
+  repo_map: 'READ',
   load_skill: 'READ',
   explore: 'READ',
   // Case store writes.

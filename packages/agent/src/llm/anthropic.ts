@@ -1,12 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { capabilitiesOf, resolveProfile } from './catalog';
 import {
   type CompletionRequest,
   type CompletionResult,
   type ContentBlock,
   type Effort,
+  isContextLengthError,
   type LlmProvider,
   type Message,
   type ProviderCapabilities,
+  parseContextGap,
   RetryableTurnError,
   type StopReason,
 } from './types';
@@ -54,7 +57,30 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   capabilities(): ProviderCapabilities {
-    return { tools: true, thinking: true, promptCaching: true, refusalFallback: this.fallbacks === 'default' };
+    const profile = resolveProfile(this.model);
+    return {
+      ...capabilitiesOf(profile),
+      tools: true,
+      toolMode: 'native',
+      thinking: true,
+      promptCaching: true,
+      refusalFallback: this.fallbacks === 'default',
+    };
+  }
+
+  /** Exact count from the API; callers fall back to the estimate when the request fails. */
+  async countTokens(request: Pick<CompletionRequest, 'system' | 'messages' | 'tools'>): Promise<number> {
+    const result = await this.client.beta.messages.countTokens({
+      model: this.model,
+      system: request.system,
+      tools: request.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
+      })),
+      messages: request.messages.map(toParam),
+    });
+    return result.input_tokens;
   }
 
   async complete(
@@ -67,11 +93,13 @@ export class AnthropicProvider implements LlmProvider {
         max_tokens: request.maxTokens,
         // Stable prefix first: tools, then the frozen system prompt carrying the cache breakpoint.
         system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
-        tools: request.tools.map((tool) => ({
+        tools: request.tools.map((tool, index) => ({
           name: tool.name,
           description: tool.description,
           input_schema: tool.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
           ...(tool.eagerInput === false ? {} : { eager_input_streaming: true }),
+          // Second breakpoint on the last tool: the tool catalog is identical across every shard worker.
+          ...(index === request.tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
         })),
         messages: request.messages.map(toParam),
         thinking: { type: 'adaptive' },
@@ -85,7 +113,13 @@ export class AnthropicProvider implements LlmProvider {
     try {
       message = await stream.finalMessage();
     } catch (err) {
-      if (err instanceof Anthropic.APIError || options.signal?.aborted) throw err;
+      if (options.signal?.aborted) throw err;
+      if (err instanceof Anthropic.APIError) {
+        // The request did not fit the window: the session shrinks its outbound view and retries.
+        if (err.status === 400 && isContextLengthError(err.message))
+          throw new RetryableTurnError(err.message, 'context', { detail: parseContextGap(err.message) ?? {} });
+        throw err;
+      }
       // With eager input streaming a tool input that is not parseable JSON rejects the stream.
       throw new RetryableTurnError(err instanceof Error ? err.message : String(err));
     }

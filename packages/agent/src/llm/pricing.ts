@@ -1,22 +1,10 @@
+import { priceOf } from './catalog';
 import type { Usage } from './types';
 
-/** USD per million tokens. Cache writes are 1.25x input (5-minute TTL). Source: Anthropic pricing, 2026-09. */
-const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
-  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25 },
-  'claude-fable-5': { input: 10, output: 50, cacheRead: 1 },
-  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
-  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5 },
-  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5 },
-  'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5 },
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2 },
-  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2 },
-  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1 },
-};
-
-/** Cost of one response, or undefined for models without a known price (never guessed). */
+/** Cost of one response from the catalog price (ADR-053), or undefined for unpriced models (never guessed). */
 export function costOf(usage: Usage, model: string): number | undefined {
-  const price = PRICES[model];
-  if (!price) return model === 'scripted' ? 0 : undefined;
+  const price = priceOf(model);
+  if (!price) return undefined;
   return (
     (usage.inputTokens * price.input +
       usage.outputTokens * price.output +

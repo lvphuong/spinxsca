@@ -100,6 +100,10 @@ export const AgentRunRecord = z.object({
     'recon',
     'logic',
     'critic',
+    // Phase 7 (ADR-055): shard workers, the reducer over their claims, compaction summaries.
+    'mapper',
+    'reducer',
+    'summarize',
   ]),
   scanId: z.string().optional(),
   caseId: z.string().optional(),
@@ -369,6 +373,78 @@ export const InvestigationResult = z.strictObject({
   variantLog: z.array(VariantHuntRow).max(200).default([]),
 });
 export type InvestigationResult = z.infer<typeof InvestigationResult>;
+
+/**
+ * Reduced finding for small or prompted-tool models (ADR-054): one primary location and the claim
+ * contract essentials. The host lifts it to `AiFinding` (defaults for attacker, obligations, roles)
+ * and caps confidence at MEDIUM because proof obligations were not enumerated.
+ */
+export const AiFindingLite = z.strictObject({
+  category: Category,
+  cwe: z.array(CweId).min(1).max(2),
+  title: z.string().min(1).max(160),
+  summary: z.string().min(1).max(1200),
+  severity: Severity,
+  confidence: Confidence,
+  claim: z.string().min(1).max(300).describe('One falsifiable sentence: the security property that is broken'),
+  path: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive().optional(),
+  evidence: z.array(z.string().max(300)).min(1).max(4),
+  remediation: z.string().min(1).max(500),
+  preconditions: z.array(z.string().max(200)).max(4).default([]),
+  capabilitiesGained: z.array(z.string().max(200)).max(4).default([]),
+  invariantId: invariantId.optional(),
+  familyId: familyId.optional(),
+});
+export type AiFindingLite = z.infer<typeof AiFindingLite>;
+
+export const InvestigationResultLite = z.strictObject({
+  findings: z.array(AiFindingLite).max(8),
+  invariantResults: z.array(InvariantResult).max(40).default([]),
+  variantLog: z.array(VariantHuntRow).max(80).default([]),
+  deferred: z.array(z.string().max(200)).max(6).default([]),
+  reviewedFiles: z.array(z.string()).max(40).default([]),
+});
+export type InvestigationResultLite = z.infer<typeof InvestigationResultLite>;
+
+const findingRef = z.string().regex(/^F-\d{1,4}$/);
+
+/** Findings from several shards that combine into a higher-impact path (ADR-055). */
+export const AttackChain = z.strictObject({
+  chainId: z.string().regex(/^CH-\d{1,3}$/),
+  /** Host-assigned finding refs (`F-n`) in attack order. */
+  members: z.array(findingRef).min(2).max(8),
+  combinedSeverity: Severity,
+  narrative: z.string().min(1).max(800),
+  combinedPreconditions: z.array(z.string().max(200)).max(8).default([]),
+});
+export type AttackChain = z.infer<typeof AttackChain>;
+
+/**
+ * Reducer deliverable (ADR-055): verdicts about host-assigned refs, never finding bodies. A finding
+ * can only be dropped (`keep: false`) with a rationale naming a carve-out or the duplicate it merges
+ * into; the host converts anything else back to kept with low confidence (downgrade, don't delete).
+ */
+export const ReduceResult = z.strictObject({
+  findings: z
+    .array(
+      z.strictObject({
+        ref: findingRef,
+        keep: z.boolean(),
+        severity: Severity,
+        confidence: Confidence,
+        mergedInto: findingRef.optional(),
+        rationale: z.string().max(400),
+      }),
+    )
+    .max(300),
+  chains: z.array(AttackChain).max(20).default([]),
+  /** Refs most severe first. */
+  ranking: z.array(findingRef).max(300).default([]),
+  notes: z.array(z.string().max(300)).max(10).default([]),
+});
+export type ReduceResult = z.infer<typeof ReduceResult>;
 
 /** Edits proposed by the remediation role; the host applies them to a workspace copy, never to the repository. */
 export const PatchProposal = z.strictObject({

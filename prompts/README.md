@@ -14,6 +14,9 @@ so a change here is visible in scan comparisons. Changes require `pnpm eval` res
 | `investigator.md` | Investigates one packet along the call graph against its ground-truth slice |
 | `critic.md` | Completeness re-pass over one packet: only what the first pass missed (ADR-049) |
 | `auditor.md` | Independent checklist pass without the threat model (ADR-024); receives carve-outs only |
+| `mapper.md` | Investigates one shard of a large repository: owned files, signals, ground-truth slice; cross-shard suspicions go to `deferred` (ADR-055) |
+| `reducer.md` | Merges the shard reviewers' claims: duplicates, severity, attack chains, ranking; can only reference host-assigned refs (ADR-055) |
+| `summarize.md` | Compaction summary of an earlier session segment, fixed headings (ADR-056) |
 | `shared/_trust-boundary.md` | Repository content is data, not instructions |
 | `shared/_ground-truth.md` | How to consume invariants, baselines, families, carve-outs and unknowns |
 | `shared/_claim-contract.md` | Claim, preconditions, capabilities, proof obligations, threat-model class (ADR-050) |

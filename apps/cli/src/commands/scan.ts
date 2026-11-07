@@ -30,6 +30,10 @@ export interface ScanCommandOptions extends CommonOptions, AiFlags {
   resume?: string;
   cache?: boolean;
   maxAiFindings?: string;
+  shards?: string;
+  mapModel?: string;
+  reduceModel?: string;
+  mapWorkers?: string;
   diff?: string;
   paths?: string[];
 }
@@ -59,6 +63,42 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
   if (mode === 'TARGETED' && !options.paths?.length) throw new CliError('--mode targeted needs --paths <path>');
   const ai = aiOptions(loaded, options);
   const maxAiFindings = options.maxAiFindings ? Number(options.maxAiFindings) : (ai?.maxFindings ?? 20);
+  // Sharding (ADR-055): --shards auto|on|off|<cap>; --map-model/--reduce-model name aliases of ai.models.
+  const shardFlag = options.shards;
+  if (shardFlag && !['auto', 'on', 'off'].includes(shardFlag) && !/^\d+$/.test(shardFlag))
+    throw new CliError(`--shards expects auto, on, off or a number (got "${shardFlag}")`);
+  const sharding = ai
+    ? {
+        enabled: (shardFlag === 'on' || shardFlag === 'off' || shardFlag === 'auto'
+          ? shardFlag
+          : shardFlag
+            ? 'on'
+            : (ai.sharding?.enabled ?? 'auto')) as 'auto' | 'on' | 'off',
+        ...(shardFlag && /^\d+$/.test(shardFlag)
+          ? { maxShards: Number(shardFlag) }
+          : ai.sharding?.max_shards
+            ? { maxShards: ai.sharding.max_shards }
+            : {}),
+        ...(ai.sharding?.max_files_per_shard ? { maxFilesPerShard: ai.sharding.max_files_per_shard } : {}),
+        ...(ai.sharding?.token_budget_ratio ? { tokenBudgetRatio: ai.sharding.token_budget_ratio } : {}),
+        ...(ai.sharding?.group_depth ? { groupDepth: ai.sharding.group_depth } : {}),
+        ...(ai.sharding?.include_zero_signal ? { includeZeroSignal: true } : {}),
+      }
+    : undefined;
+  const mapWorkers = options.mapWorkers ? Number(options.mapWorkers) : ai?.parallel?.map_workers;
+  if (mapWorkers !== undefined && (!Number.isInteger(mapWorkers) || mapWorkers < 1))
+    throw new CliError('--map-workers must be a positive integer');
+  if (ai && (options.mapModel || options.reduceModel)) {
+    for (const alias of [options.mapModel, options.reduceModel]) {
+      if (alias && !ai.models?.[alias])
+        throw new CliError(`--map-model/--reduce-model: "${alias}" is not an alias in ai.models`);
+    }
+    ai.routing = {
+      ...ai.routing,
+      ...(options.mapModel ? { map: options.mapModel } : {}),
+      ...(options.reduceModel ? { reduce: options.reduceModel } : {}),
+    };
+  }
 
   return withEngine(path, { ...options, ...(ai ? { aiConfig: ai } : {}) }, async (engine) => {
     if (ai && !options.json) {
@@ -107,6 +147,8 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
                 maxFindings: maxAiFindings,
                 maxCostUsd: ai.maxCostUsd,
                 ...(ai.context ? { context: ai.context } : {}),
+                ...(sharding ? { sharding } : {}),
+                ...(mapWorkers ? { mapWorkers } : {}),
               },
             }
           : {}),
@@ -228,6 +270,12 @@ export async function scanCommand(path: string | undefined, options: ScanCommand
           '',
           `${pc.dim('AI')} investigated ${outcome.ai.investigated} finding(s), explained ${outcome.ai.explained}, skipped ${outcome.ai.skipped}, cost $${outcome.ai.costUsd.toFixed(4)}${outcome.ai.failures.length ? pc.yellow(`; notes: ${outcome.ai.failures.join('; ')}`) : ''}`,
         );
+        if (outcome.ai.shards) {
+          const s = outcome.ai.shards;
+          out.push(
+            `${pc.dim('AI shards')} ${s.planned} planned, ${s.completed} completed${s.reused ? ` (${s.reused} reused)` : ''}${s.failed ? pc.yellow(`, ${s.failed} not run`) : ''}${s.overCap ? pc.yellow(`, ${s.overCap} file(s) over the shard cap`) : ''}${outcome.ai.chains?.length ? `, ${outcome.ai.chains.length} attack chain(s)` : ''}`,
+          );
+        }
       }
       out.push('', pc.dim('Reports:'));
       for (const [format, file] of Object.entries(reports)) out.push(`  ${format.padEnd(5)} ${file}`);

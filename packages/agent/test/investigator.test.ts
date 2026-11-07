@@ -204,6 +204,78 @@ describe('AgentInvestigator', () => {
     expect(JSON.stringify(providers[3]?.requests[0]?.messages[0])).not.toContain('authz-1');
   });
 
+  it('offers the lite deliverable to prompted-tool models and lifts it (ADR-054)', async () => {
+    class Prompted extends ScriptedProvider {
+      override capabilities() {
+        return { ...super.capabilities(), toolMode: 'prompted' as const, maxContext: 32_768 };
+      }
+    }
+    const providers: Prompted[] = [];
+    const provider = () => {
+      const p = new Prompted([
+        (request) => {
+          const submit = request.tools.find((t) => t.name === 'submit_investigation');
+          if (!submit) {
+            return {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'p',
+                  name: 'submit_threat_model',
+                  input: { summary: 's', trustBoundaries: [], packets: [], notes: [] },
+                },
+              ],
+            };
+          }
+          const props = (
+            submit.inputSchema as { properties: Record<string, { items?: { properties?: Record<string, unknown> } }> }
+          ).properties;
+          expect(props.findings?.items?.properties).not.toHaveProperty('attacker');
+          expect(props.findings?.items?.properties).toHaveProperty('claim');
+          return {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'i',
+                name: 'submit_investigation',
+                input: {
+                  findings: [
+                    {
+                      category: 'BROKEN_OBJECT_LEVEL_AUTHORIZATION',
+                      cwe: ['CWE-639'],
+                      title: 'Order lookup without ownership check',
+                      summary: 'findOne returns any order by id.',
+                      severity: 'HIGH',
+                      confidence: 'HIGH',
+                      claim: 'Any authenticated user can read any order.',
+                      path: 'orders.controller.ts',
+                      startLine: 4,
+                      evidence: ['orders.controller.ts:5 findById(id) without owner filter'],
+                      remediation: 'Filter by the caller.',
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+        },
+      ]);
+      providers.push(p);
+      return p;
+    };
+    const investigator = new AgentInvestigator({ provider, prompts, recon: { enabled: false } });
+    const outcome = await investigator.investigate(subject, source, { maxCostUsd: 5 });
+    expect(outcome.drafts).toHaveLength(1);
+    expect(outcome.drafts[0]).toMatchObject({ scanner: 'ai', category: 'BROKEN_OBJECT_LEVEL_AUTHORIZATION' });
+    expect(outcome.drafts[0]?.message).toContain('Claim: Any authenticated user can read any order.');
+    expect(outcome.drafts[0]?.message).toContain('not enumerated by a lite submission');
+    expect(outcome.drafts[0]?.locations[0]).toMatchObject({
+      path: 'orders.controller.ts',
+      startLine: 4,
+      role: 'primary',
+    });
+  });
+
   it('rejects findings with bad citations or without a primary location', async () => {
     const bad = { ...finding, locations: [{ path: 'missing.ts', startLine: 1, endLine: 1, role: 'primary' }] };
     const noPrimary = {

@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import type {
   AiContextConfig,
+  AiFinding,
+  AttackChain,
   CaseVerdict,
   Coverage,
   Evidence,
@@ -8,13 +10,18 @@ import type {
   FindingAssessment,
   FindingCandidate,
   GroundTruth,
+  InvariantResult,
   Location,
+  RepoDigest,
   ScanMode,
   ScanRun,
   ScanStatus,
   ScanSummary,
   ScanTask,
+  Shard,
+  ShardPlan,
   SnapshotFile,
+  VariantHuntRow,
 } from '@spinxsca/schemas';
 import { familyOf, Location as LocationSchema, SEVERITY_RANK } from '@spinxsca/schemas';
 import { type Activity, runActivity } from '../activity';
@@ -22,7 +29,9 @@ import { isAiScanner } from '../ai-origin';
 import { latestScanOnBranch } from '../branches';
 import type { GroundTruthCoverage } from '../case/objectives';
 import { buildCauseAttributor } from '../causes';
+import { buildResourceMatrix } from '../census/resource-matrix';
 import { buildCoverageOracle, type TaskCoverage } from '../coverage';
+import { buildRepoDigest } from '../digest/index';
 import { errorMessage, SpinxscaError, throwIfAborted } from '../errors';
 import { anchorFor, assignInstances, semanticFingerprint } from '../fingerprint';
 import { digestOf, newId, sha256Hex } from '../ids';
@@ -40,6 +49,7 @@ import type {
   KnowledgeBasePort,
   KnowledgeBaseRef,
   Logger,
+  MapReduceInvestigator,
   SandboxRunner,
   ScannerAdapter,
   ScannerResult,
@@ -50,8 +60,10 @@ import { groupCandidates, PRESENT_STATES, type PriorFinding, type ReconcileOutpu
 import { applyRedactions, type RedactionSpan, redactSecrets, scrubberFromSpans } from '../redact';
 import type { AutonomousReviewer, ReviewPortContext, ReviewPorts } from '../review/ports';
 import { applyCaseVerdicts } from '../review/verdicts';
+import { collectSignals, planShards, SELECTOR_VERSION, shardTokenBudget, shouldShard } from '../shards/index';
 import { captureSnapshot } from '../snapshot';
 import { AI_POLICY_VERSION, FINGERPRINT_ALGORITHM } from '../version';
+import { runLimited } from './run-limited';
 
 export interface ScanDeps {
   repo: ScanRepository;
@@ -67,6 +79,8 @@ export interface ScanDeps {
   codeIntel?: CodeIntelPort;
   explainer?: FindingExplainer;
   investigator?: Investigator;
+  /** Sharded standard-level investigation for large repositories (ADR-055). */
+  mapReduce?: MapReduceInvestigator;
   /** Autonomous review (`ai.level: deep`, ADR-044) and the ports of its case. */
   reviewer?: AutonomousReviewer;
   reviewPorts?: (ctx: ReviewPortContext) => Promise<ReviewPorts>;
@@ -84,6 +98,17 @@ export interface AiScanOptions {
   maxCostUsd: number;
   /** Operator context pack (ADR-051), handed to the AI roles as claims to recheck. */
   context?: AiContextConfig;
+  /** Sharded investigation (ADR-055); `auto` shards once the candidate set outgrows one investigation. */
+  sharding?: {
+    enabled: 'auto' | 'on' | 'off';
+    maxShards?: number;
+    maxFilesPerShard?: number;
+    tokenBudgetRatio?: number;
+    groupDepth?: number;
+    includeZeroSignal?: boolean;
+  };
+  /** Concurrent shard workers (bounded by the map endpoint). */
+  mapWorkers?: number;
 }
 
 export interface ScanRequest {
@@ -135,6 +160,19 @@ export interface ScanOutcome {
     coverage?: GroundTruthCoverage;
     /** Artifact digest of the ground truth extracted by recon. */
     groundTruthDigest?: string;
+    /** Sharded investigation (ADR-055). */
+    shards?: {
+      planned: number;
+      completed: number;
+      failed: number;
+      reused: number;
+      /** Files the plan dropped at `max_shards`. */
+      overCap: number;
+      planDigest?: string;
+    };
+    chains?: AttackChain[];
+    /** Artifact digest of the repository digest (ADR-056). */
+    repoDigest?: string;
   };
 }
 
@@ -203,6 +241,95 @@ const investigationActivity: Activity<
   name: 'ai-investigation',
   kind: 'AGENT',
   idempotencyKey: (input) => `investigation:${digestOf(input.identity)}`,
+  run: async (input) => ({ output: await input.run() }),
+};
+
+const digestActivity: Activity<{ identity: Record<string, unknown>; run: () => Promise<RepoDigest> }, RepoDigest> = {
+  name: 'repo-digest',
+  kind: 'INDEX',
+  idempotencyKey: (input) => `digest:${digestOf(input.identity)}`,
+  run: async (input) => ({ output: await input.run() }),
+};
+
+const shardPlanActivity: Activity<{ identity: Record<string, unknown>; run: () => Promise<ShardPlan> }, ShardPlan> = {
+  name: 'shard-plan',
+  kind: 'SHARD_PLAN',
+  idempotencyKey: (input) => `shards:${digestOf(input.identity)}`,
+  run: async (input) => ({ output: await input.run() }),
+};
+
+interface ReconActivityOutput {
+  groundTruth: GroundTruth;
+  summary: string;
+  runIds: string[];
+  costUsd: number;
+  deferred: string[];
+  infraFailures: string[];
+}
+const reconActivity: Activity<
+  { identity: Record<string, unknown>; run: () => Promise<ReconActivityOutput> },
+  ReconActivityOutput
+> = {
+  name: 'ai-recon',
+  kind: 'AGENT',
+  idempotencyKey: (input) => `recon:${digestOf(input.identity)}`,
+  run: async (input) => ({ output: await input.run() }),
+};
+
+interface ShardMapOutput {
+  shardId: string;
+  findings: AiFinding[];
+  invariantResults: InvariantResult[];
+  variantLog: VariantHuntRow[];
+  reviewedFiles: string[];
+  deferred: string[];
+  runId: string;
+  costUsd: number;
+}
+/**
+ * One shard investigation (ADR-055). The key is the shard's content digest plus prompt, model and
+ * ground truth, so unchanged shards are reused across scans and a changed file re-runs only its shard.
+ */
+const mapShardActivity: Activity<
+  { shard: Shard; identity: Record<string, unknown>; total: number; run: () => Promise<ShardMapOutput> },
+  ShardMapOutput
+> = {
+  name: 'ai-shard',
+  kind: 'AGENT',
+  idempotencyKey: (input) => `ai-shard:${input.shard.digest}:${digestOf(input.identity)}`,
+  run: async (input, ctx) => {
+    const output = await input.run();
+    const paths = input.shard.files.map((f) => f.path);
+    const list = await ctx.artifacts.put(JSON.stringify(paths), 'application/json');
+    return {
+      output,
+      coverage: {
+        scope: 'TARGETED',
+        completeness: 'COMPLETE',
+        files: { analyzed: paths.length, total: input.total, listDigest: list.digest },
+        languages: [...new Set(input.shard.files.flatMap((f) => (f.language ? [f.language] : [])))],
+        reviewedSurfaces: paths,
+        toolErrors: [],
+      },
+    };
+  },
+};
+
+interface ReduceActivityOutput {
+  drafts: CandidateDraft[];
+  chains: AttackChain[];
+  runIds: string[];
+  costUsd: number;
+  deferred: string[];
+  coverage: GroundTruthCoverage;
+}
+const reduceActivity: Activity<
+  { identity: Record<string, unknown>; run: () => Promise<ReduceActivityOutput> },
+  ReduceActivityOutput
+> = {
+  name: 'ai-reduce',
+  kind: 'AGENT',
+  idempotencyKey: (input) => `reduce:${digestOf(input.identity)}`,
   run: async (input) => ({ output: await input.run() }),
 };
 
@@ -529,7 +656,298 @@ async function executeScan(
   let aiRan = false;
   const scannerDrafts = scannerOutputs.flatMap((o) => o.output?.drafts ?? []);
   const redactionsEarly = secretSpans(scannerDrafts);
-  if (request.ai?.level === 'standard' && deps.investigator) {
+  const failedShards: string[] = [];
+
+  // Repository digest (ADR-056): orientation for recon and shard workers, built once per content+index.
+  let repoDigest: RepoDigest | undefined;
+  if (request.ai?.level === 'standard' || request.ai?.level === 'deep') {
+    const digested = await runActivity(runnerDeps, scan.scanId, digestActivity, {
+      identity: { content: snapshot.contentManifestDigest, index: indexDigest ?? null, version: 1 },
+      run: async () => {
+        const sites = graph
+          ? (
+              await buildResourceMatrix(
+                graph,
+                deps.source,
+                files.map((f) => f.path),
+              )
+            ).sites
+          : [];
+        return buildRepoDigest({
+          files,
+          contentManifestDigest: snapshot.contentManifestDigest,
+          ...(graph ? { graph } : {}),
+          sites,
+        });
+      },
+    });
+    repoDigest = digested.output;
+    if (repoDigest && digested.task.outputDigest) aiStats.repoDigest = digested.task.outputDigest;
+  }
+
+  // 4a. Sharded investigation (ADR-055): plan -> recon -> map per shard -> reduce. Small candidate
+  //     sets keep the single-investigation flow below unless sharding is forced on.
+  let plan: ShardPlan | undefined;
+  if (request.ai?.level === 'standard' && deps.mapReduce && request.ai.sharding?.enabled !== 'off') {
+    const mr = deps.mapReduce;
+    const options = request.ai;
+    const effective = mr.mapEffectiveWindow();
+    const tokenBudget = shardTokenBudget(effective, options.sharding?.tokenBudgetRatio);
+    const planOptions = {
+      ...(options.sharding?.maxShards !== undefined ? { maxShards: options.sharding.maxShards } : {}),
+      ...(options.sharding?.maxFilesPerShard !== undefined
+        ? { maxFilesPerShard: options.sharding.maxFilesPerShard }
+        : {}),
+      ...(options.sharding?.groupDepth !== undefined ? { groupDepth: options.sharding.groupDepth } : {}),
+      ...(options.sharding?.includeZeroSignal !== undefined
+        ? { includeZeroSignal: options.sharding.includeZeroSignal }
+        : {}),
+    };
+    progress({ stage: 'ai', message: 'planning shards' });
+    const planned = await runActivity(runnerDeps, scan.scanId, shardPlanActivity, {
+      identity: {
+        content: snapshot.contentManifestDigest,
+        selectorVersion: SELECTOR_VERSION,
+        tokenBudget,
+        planOptions,
+        scope: scope ?? null,
+        scannerDrafts: digestOf(
+          scannerDrafts.map((d) => [d.category, d.locations[0]?.path, d.locations[0]?.startLine]),
+        ),
+      },
+      run: async () => {
+        const matrix = graph
+          ? await buildResourceMatrix(
+              graph,
+              deps.source,
+              files.map((f) => f.path),
+            )
+          : undefined;
+        const signals = await collectSignals({
+          files,
+          readText: (p) => deps.source.readText(p),
+          ...(graph ? { graph } : {}),
+          ...(matrix ? { matrix } : {}),
+          scannerDrafts,
+          ...(deps.codeIntel?.signals ? { codeIntel: deps.codeIntel } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+        return planShards({
+          files,
+          signals,
+          tokenBudget,
+          mapModel: mr.info.mapModel,
+          contentManifestDigest: snapshot.contentManifestDigest,
+          ...(scope ? { scope } : {}),
+          ...(graph ? { graph } : {}),
+          options: planOptions,
+        });
+      },
+    });
+    const candidate = planned.output
+      ? { files: planned.output.stats.candidateFiles, tokens: planned.output.stats.totalTokens }
+      : undefined;
+    const useShards =
+      planned.output !== undefined &&
+      (options.sharding?.enabled === 'on' ||
+        !deps.investigator ||
+        (candidate !== undefined && shouldShard(candidate, effective)));
+    if (useShards) plan = planned.output;
+    else if (!planned.output) aiStats.failures.push(`shard plan: ${planned.task.error ?? planned.task.status}`);
+  }
+  if (plan && deps.mapReduce && request.ai) {
+    aiRan = true;
+    const mr = deps.mapReduce;
+    const options = request.ai;
+    const filePathsAll = files.map((f) => f.path);
+    const scannerCandidates = scannerDrafts.map((d) => ({
+      category: d.category,
+      title: d.title,
+      locations: d.locations,
+      ruleId: d.ruleId,
+    }));
+    const planRef = await artifacts.put(JSON.stringify(plan), 'application/vnd.spinxsca.shard-plan+json');
+    let spent = 0;
+    const remaining = () => Math.max(0, options.maxCostUsd - spent);
+    progress({
+      stage: 'ai',
+      message: `recon over ${filePathsAll.length} file(s); ${plan.shards.length} shard(s) planned`,
+    });
+    const recon = await runActivity(runnerDeps, scan.scanId, reconActivity, {
+      identity: {
+        content: snapshot.contentManifestDigest,
+        policy: scan.manifest.aiPolicy,
+        prompts: mr.info.promptBundleDigest,
+        model: mr.info.model,
+        context: options.context ?? null,
+      },
+      run: async () => {
+        const out = await mr.recon(
+          {
+            scan,
+            snapshotPaths: filePathsAll,
+            ...(graph ? { graph } : {}),
+            scannerCandidates,
+            redactions: redactionsEarly,
+            ...(options.context ? { context: options.context } : {}),
+            ...(repoDigest ? { digest: repoDigest } : {}),
+          },
+          deps.source,
+          {
+            maxCostUsd: remaining(),
+            ...(request.signal ? { signal: request.signal } : {}),
+            onRun: (run) => repo.saveAgentRun(run),
+          },
+        );
+        return {
+          groundTruth: out.groundTruth,
+          summary: out.summary,
+          runIds: out.runs.map((r) => r.agentRunId),
+          costUsd: out.costUsd,
+          deferred: out.deferred,
+          infraFailures: out.infraFailures,
+        };
+      },
+    });
+    throwIfAborted(request.signal);
+    if (!recon.output) aiStats.failures.push(`recon: ${recon.task.error ?? recon.task.status}`);
+    spent += recon.output?.costUsd ?? 0;
+    if (recon.output?.deferred.length) aiStats.failures.push(`deferred: ${recon.output.deferred.join('; ')}`);
+    if (recon.output?.infraFailures.length) aiStats.infraFailures = [...recon.output.infraFailures];
+    groundTruth = recon.output?.groundTruth;
+    const gt: GroundTruth = groundTruth ?? {
+      archetype: 'hybrid',
+      archetypeNote: 'recon unavailable',
+      trustClaims: [],
+      invariants: [],
+      baselines: [],
+      families: [],
+      carveouts: [],
+      residualUnknowns: [],
+      notes: [],
+    };
+    const gtDigest = digestOf(gt);
+
+    const shards = plan.shards;
+    let done = 0;
+    let reused = 0;
+    const mapResults = await runLimited(
+      shards.map((shard) => async () => {
+        const left = shards.length - done;
+        const perShard = remaining() / Math.max(1, left);
+        const result = await runActivity(runnerDeps, scan.scanId, mapShardActivity, {
+          shard,
+          total: filePathsAll.length,
+          identity: {
+            prompts: mr.info.promptBundleDigest,
+            model: mr.info.mapModel,
+            groundTruth: gtDigest,
+            context: options.context ?? null,
+          },
+          run: async () => {
+            if (perShard <= 0)
+              throw new SpinxscaError(
+                `cost budget of $${options.maxCostUsd} exhausted before ${shard.shardId}`,
+                'BUDGET_EXHAUSTED',
+              );
+            const out = await mr.map(
+              {
+                scan,
+                shard,
+                snapshotPaths: filePathsAll,
+                ...(graph ? { graph } : {}),
+                groundTruth: gt,
+                scannerCandidates,
+                redactions: redactionsEarly,
+                ...(options.context ? { context: options.context } : {}),
+                ...(repoDigest ? { digest: repoDigest } : {}),
+              },
+              deps.source,
+              { maxCostUsd: perShard, ...(request.signal ? { signal: request.signal } : {}) },
+            );
+            await repo.saveAgentRun(out.run);
+            return {
+              shardId: shard.shardId,
+              findings: out.findings,
+              invariantResults: out.invariantResults,
+              variantLog: out.variantLog,
+              reviewedFiles: out.reviewedFiles,
+              deferred: out.deferred,
+              runId: out.run.agentRunId,
+              costUsd: out.costUsd,
+            };
+          },
+        });
+        done++;
+        if (result.reused) reused++;
+        spent += result.output?.costUsd ?? 0;
+        if (!result.output) failedShards.push(`${shard.shardId} (${result.task.error ?? result.task.status})`);
+        progress({
+          stage: 'ai',
+          message: `ai: shard ${done}/${shards.length} ${shard.module} (${(shard.tokens / 1000).toFixed(1)}k tokens)${result.reused ? ' reused' : ''}${result.output ? '' : ' FAILED'}`,
+        });
+        return result;
+      }),
+      Math.max(1, options.mapWorkers ?? mr.mapWorkers()),
+    );
+    throwIfAborted(request.signal);
+    const maps = mapResults.flatMap((r) => (r.output ? [r.output] : []));
+    for (const m of maps) if (m.deferred.length) aiStats.failures.push(`deferred: ${m.deferred.join('; ')}`);
+
+    progress({
+      stage: 'ai',
+      message: `reducing ${maps.reduce((n, m) => n + m.findings.length, 0)} finding(s) from ${maps.length} shard(s)`,
+    });
+    const reduced = await runActivity(runnerDeps, scan.scanId, reduceActivity, {
+      identity: {
+        maps: digestOf(mapResults.map((r) => r.task.outputDigest ?? r.task.status)),
+        prompts: mr.info.promptBundleDigest,
+        model: mr.info.reduceModel,
+        groundTruth: gtDigest,
+      },
+      run: async () => {
+        const out = await mr.reduce(
+          { scan, groundTruth: gt, maps, scannerCandidates, redactions: redactionsEarly },
+          { maxCostUsd: remaining(), ...(request.signal ? { signal: request.signal } : {}) },
+        );
+        if (out.run) await repo.saveAgentRun(out.run);
+        return {
+          drafts: out.drafts,
+          chains: out.chains,
+          runIds: out.run ? [out.run.agentRunId] : [],
+          costUsd: out.costUsd,
+          deferred: out.deferred,
+          coverage: out.coverage,
+        };
+      },
+    });
+    spent += reduced.output?.costUsd ?? 0;
+    aiStats.costUsd += spent;
+    if (reduced.output) {
+      aiStats.investigated = reduced.output.drafts.length;
+      aiStats.coverage = reduced.output.coverage;
+      if (reduced.output.chains.length) aiStats.chains = reduced.output.chains;
+      if (reduced.output.deferred.length) aiStats.failures.push(`deferred: ${reduced.output.deferred.join('; ')}`);
+      scannerOutputs.push({ task: reduced.task, output: { drafts: reduced.output.drafts, rawArtifacts: {} } });
+    } else aiStats.failures.push(`reduce: ${reduced.task.error ?? reduced.task.status}`);
+    if (groundTruth) {
+      const ref = await artifacts.put(JSON.stringify(groundTruth), 'application/json');
+      aiStats.groundTruthDigest = ref.digest;
+    }
+    aiStats.shards = {
+      planned: shards.length,
+      completed: maps.length,
+      failed: failedShards.length,
+      reused,
+      overCap: plan.excluded.overCap.length,
+      planDigest: planRef.digest,
+    };
+    if (failedShards.length) aiStats.failures.push(`shards not investigated: ${failedShards.join(', ')}`);
+    if (plan.excluded.overCap.length)
+      aiStats.failures.push(
+        `deferred: ${plan.excluded.overCap.length} file(s) beyond ai.sharding.max_shards not investigated`,
+      );
+  } else if (request.ai?.level === 'standard' && deps.investigator) {
     aiRan = true;
     const investigator = deps.investigator;
     const options = request.ai;
@@ -553,6 +971,7 @@ async function executeScan(
               : {}),
             redactions: redactionsEarly,
             ...(options.context ? { context: options.context } : {}),
+            ...(repoDigest ? { digest: repoDigest } : {}),
           },
           deps.source,
           {
@@ -747,14 +1166,21 @@ async function executeScan(
   const allOk = scannerTasks.length > 0 && scannerTasks.every((t) => t.status === 'SUCCEEDED');
   const anyOk = scannerTasks.some((t) => t.status === 'SUCCEEDED' || t.status === 'PARTIAL');
   const nothingToDo = scannerTasks.length === 0 && scope !== undefined && scope.length === 0;
-  const status: ScanStatus = allOk || nothingToDo ? 'COMPLETED' : anyOk ? 'PARTIAL' : 'FAILED';
+  // A shard that did not run leaves part of the AI coverage missing: the scan is PARTIAL, never
+  // silently clean (ADR-055).
+  const shardsMissing = failedShards.length > 0;
+  const status: ScanStatus =
+    (allOk || nothingToDo) && !shardsMissing ? 'COMPLETED' : anyOk || nothingToDo ? 'PARTIAL' : 'FAILED';
   const summary = summarize(
     candidates.length,
     assessments,
-    allOk || nothingToDo ? 'COMPLETE' : anyOk ? 'PARTIAL' : 'FAILED',
+    (allOk || nothingToDo) && !shardsMissing ? 'COMPLETE' : anyOk || nothingToDo ? 'PARTIAL' : 'FAILED',
   );
   const completedAt = clock.now().toISOString();
   const problems = [
+    ...failedShards.map(
+      (s) => `ai-shard:${s.split(' ')[0]} NOT_RUN${s.includes('(') ? ` ${s.slice(s.indexOf('('))}` : ''}`,
+    ),
     ...scannerTasks.filter((t) => t.error).map((t) => `${t.scannerId}: ${t.error}`),
     ...scannerTasks
       .filter((t) => t.status === 'PARTIAL')

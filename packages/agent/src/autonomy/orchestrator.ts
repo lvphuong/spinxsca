@@ -6,6 +6,7 @@ import {
   type CandidateDraft,
   type CaseRepository,
   checkIndependence,
+  collectSignals,
   controlOf,
   type DependencyInfo,
   digestOf,
@@ -13,6 +14,7 @@ import {
   HandleTable,
   initialMemoryStatus,
   moveItem,
+  planShards,
   quotaOf,
   type ResourceMatrix,
   type ReviewOutcome,
@@ -23,7 +25,12 @@ import {
   renderMemory,
   type SecretScrubber,
   type SourceTree,
+  selectorLanguageOf,
+  sha256,
   sha256Hex,
+  shardTokenBudget,
+  shouldShard,
+  skipForSelectors,
 } from '@spinxsca/core';
 import {
   buildApprovalRequest,
@@ -51,7 +58,7 @@ import type {
   WorkItem,
   WorkItemKind,
 } from '@spinxsca/schemas';
-import { GroundTruth } from '@spinxsca/schemas';
+import { GroundTruth, type Shard, type SnapshotFile } from '@spinxsca/schemas';
 
 import { acceptedRisksVar, coverageOf, mergeOperatorContext, renderOperatorContext } from '../ground-truth';
 import { providerJudge } from '../llm/judge';
@@ -60,12 +67,15 @@ import type { Effort, LlmProvider, Usage } from '../llm/types';
 import { loadPersonas, type Persona } from '../personas/loader';
 import { checkManifest } from '../personas/manifest';
 import { costWithOverrides, type PriceOverride } from '../runtime/budget';
-import { DEFAULT_COMPACTION } from '../runtime/compaction';
 import { runLimited, Semaphore } from '../runtime/concurrency';
+import { contextBudgetFor } from '../runtime/context-budget';
 import { GovernedToolExecutor } from '../runtime/governed-executor';
+import { createReadResultTool, MemoryResultStore, type ResultStore } from '../runtime/result-store';
 import { runAgentSession, type SessionResult } from '../runtime/session';
+import { DEFAULT_SUMMARY_SYSTEM, llmSummarizer } from '../runtime/summarizer';
 import type { AgentTool } from '../runtime/tools';
 import { caseSessionStore } from '../runtime/transcript';
+import { DEFAULT_BUDGET } from '../runtime/types';
 import { loadSkills, type SkillBundle } from '../skills/bundle';
 import { createSkillTool } from '../skills/tools';
 import { createCodeTools } from '../tools/code-tools';
@@ -121,6 +131,10 @@ export interface AutonomyConfig {
   recon?: { enabled: boolean; criticPasses: number; maxLogicItems: number; census: boolean };
   /** Operator context pack (ADR-051). */
   context?: AiContextConfig;
+  /** Sharded board for large repositories (ADR-055): one threat packet per shard. */
+  sharding?: { enabled: 'auto' | 'on' | 'off'; maxShards?: number; maxFilesPerShard?: number; groupDepth?: number };
+  /** Concurrent explore sub-agents per case (default 3). */
+  exploreParallel?: number;
 }
 
 export interface CaseEvent {
@@ -199,6 +213,8 @@ interface CaseRuntime {
   deferred: string[];
   reviewerBreaker: ConsecutiveBreaker;
   exploreLimit: Semaphore;
+  /** Out-of-band tool results of this case (ADR-056). */
+  resultStore: ResultStore;
   historySummary?: string;
   /** Ground truth once the RECON item is done (merged with the operator context). */
   groundTruth?: GroundTruth;
@@ -305,7 +321,8 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       runIds: [],
       deferred: [],
       reviewerBreaker: new ConsecutiveBreaker(5),
-      exploreLimit: new Semaphore(3),
+      exploreLimit: new Semaphore(this.o.config.exploreParallel ?? 3),
+      resultStore: new MemoryResultStore(),
       handleItems: new Map(),
     };
     const recon = this.o.config.recon;
@@ -313,6 +330,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       rt.matrix = await buildResourceMatrix(subject.graph, source, subject.snapshotPaths);
     }
     rt.groundTruth = await this.loadGroundTruth(rt);
+    const shards = await this.planShards(rt);
 
     const created: CaseHandle[] = [];
     for (const draft of subject.scannerDrafts) {
@@ -337,6 +355,7 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
         iacFiles: subject.snapshotPaths.filter(isIacFile),
         l3: this.o.config.l3,
         objectives: this.o.objectives ?? [],
+        ...(shards ? { shards } : {}),
         ...(recon?.enabled
           ? {
               recon: true,
@@ -1188,7 +1207,8 @@ export class AgentAutonomousReviewer implements AutonomousReviewer {
       runIds: [],
       deferred: [],
       reviewerBreaker: new ConsecutiveBreaker(5),
-      exploreLimit: new Semaphore(3),
+      exploreLimit: new Semaphore(this.o.config.exploreParallel ?? 3),
+      resultStore: new MemoryResultStore(),
       handleItems: new Map(),
     };
     const out: RemediationOutcome[] = [];
@@ -1511,13 +1531,15 @@ Risks: ${d.risks.join('; ')}`;
     const startedAt = this.now().toISOString();
     const memory = renderMemory(await rt.cases.listMemory({ projectId: rt.rc.projectId, status: 'active' }));
     const skills = this.skills.forPersona(persona.manifest.skills, persona.manifest.tools);
+    // Stable prefix (ADR-056): the system prompt holds only the persona and playbook index so every
+    // worker of the case shares one cached prefix; memory changes per round and rides in the prompt.
     const system = [
       persona.prompt.replace(/\{\{accepted_risks\}\}/g, acceptedRisksVar(this.o.config.context)),
       skills.length ? `## Playbooks (load with load_skill)\n${this.skills.index(skills)}` : '',
-      memory,
     ]
       .filter(Boolean)
       .join('\n\n');
+    const prompt = memory ? `${memory}\n\n${s.prompt}` : s.prompt;
     const executor = new GovernedToolExecutor({
       cases: rt.cases,
       projectId: rt.rc.projectId,
@@ -1530,6 +1552,8 @@ Risks: ${d.risks.join('; ')}`;
       approvers: this.approvers(rt),
       scrubber: rt.subject.scrubber,
       now: this.now,
+      resultStore: rt.resultStore,
+      inlineChars: contextBudgetFor(provider.capabilities(), DEFAULT_BUDGET).inlineResultChars,
     });
     const result = await runAgentSession({
       runId,
@@ -1537,7 +1561,11 @@ Risks: ${d.risks.join('; ')}`;
       role: persona.manifest.role,
       provider,
       system,
-      prompt: s.prompt,
+      prompt,
+      summarizer: llmSummarizer(this.o.fastProvider ?? this.o.provider, {
+        system: DEFAULT_SUMMARY_SYSTEM,
+        scrub: (t) => rt.subject.scrubber.scrub(t),
+      }),
       tools: s.tools,
       submit: s.submit,
       executor,
@@ -1567,7 +1595,6 @@ Risks: ${d.risks.join('; ')}`;
         if (Date.now() > rt.deadline) return 'case wall-clock budget reached';
         return undefined;
       },
-      compaction: DEFAULT_COMPACTION,
       now: this.now,
     });
     const record: AgentRunRecord = {
@@ -1709,6 +1736,47 @@ Risks: ${d.risks.join('; ')}`;
     }).map((t) => this.metered(rt, t));
   }
 
+  /**
+   * Shard plan for the board (ADR-055): signals from the index, census and selectors, packed by the
+   * provider's window. Only when sharding is on, or `auto` and the repository outgrows one review.
+   */
+  private async planShards(rt: CaseRuntime): Promise<Shard[] | undefined> {
+    const sharding = this.o.config.sharding;
+    if (!sharding || sharding.enabled === 'off') return undefined;
+    const files: SnapshotFile[] = [];
+    for (const path of rt.subject.snapshotPaths) {
+      if (skipForSelectors(path, 0) || !selectorLanguageOf(path)) continue;
+      const text = await rt.source.readText(path);
+      if (text === undefined) continue;
+      files.push({ path, digest: sha256(text), size: text.length });
+    }
+    const signals = await collectSignals({
+      files,
+      readText: (p) => rt.source.readText(p),
+      ...(rt.subject.graph ? { graph: rt.subject.graph } : {}),
+      ...(rt.matrix ? { matrix: rt.matrix } : {}),
+      scannerDrafts: rt.subject.scannerDrafts,
+      ...(rt.signal ? { signal: rt.signal } : {}),
+    });
+    const effective = contextBudgetFor(this.o.provider().capabilities(), DEFAULT_BUDGET).effective;
+    const plan = planShards({
+      files,
+      signals,
+      tokenBudget: shardTokenBudget(effective),
+      mapModel: this.o.provider().model,
+      contentManifestDigest: sha256(files.map((f) => `${f.path}\0${f.digest}`).join('\n')),
+      ...(rt.subject.graph ? { graph: rt.subject.graph } : {}),
+      options: {
+        ...(sharding.maxShards !== undefined ? { maxShards: sharding.maxShards } : {}),
+        ...(sharding.maxFilesPerShard !== undefined ? { maxFilesPerShard: sharding.maxFilesPerShard } : {}),
+        ...(sharding.groupDepth !== undefined ? { groupDepth: sharding.groupDepth } : {}),
+      },
+    });
+    const candidate = { files: plan.stats.candidateFiles, tokens: plan.stats.totalTokens };
+    if (sharding.enabled === 'on' || shouldShard(candidate, effective)) return plan.shards;
+    return undefined;
+  }
+
   private workerTools(rt: CaseRuntime, persona: Persona, runId: string, item: WorkItem): AgentTool<never>[] {
     const code = createCodeTools({
       source: rt.source,
@@ -1716,7 +1784,14 @@ Risks: ${d.risks.join('; ')}`;
       redactions: rt.subject.redactions,
     }).map(withPathTargets);
     const graph = rt.subject.graph ? createGraphTools(rt.subject.graph) : [];
-    const read = [...code, ...graph];
+    const read = [
+      ...code,
+      ...graph,
+      createReadResultTool(
+        rt.resultStore,
+        contextBudgetFor(this.o.provider().capabilities(), DEFAULT_BUDGET).inlineResultChars,
+      ),
+    ];
     const explorePersona = this.personas.get('explore');
     const explore = explorePersona
       ? [

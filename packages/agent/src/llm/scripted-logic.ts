@@ -1,3 +1,4 @@
+import { SCRIPTED_CAPABILITIES } from './catalog';
 import {
   type CompletionRequest,
   type CompletionResult,
@@ -85,7 +86,7 @@ export class ScriptedLogicProvider implements LlmProvider {
   readonly requests: CompletionRequest[] = [];
 
   capabilities(): ProviderCapabilities {
-    return { tools: true, thinking: false, promptCaching: false, refusalFallback: false };
+    return { ...SCRIPTED_CAPABILITIES };
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {

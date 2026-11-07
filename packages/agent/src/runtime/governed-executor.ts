@@ -17,6 +17,7 @@ import {
 } from '@spinxsca/governance';
 import type { PolicyDecision, RiskClass, ToolCallRecord } from '@spinxsca/schemas';
 import { capOutput, DEFAULT_OUTPUT_LIMIT, type ToolExecutor, type ToolOutcome, type ToolUse } from './executor';
+import { boundOutput, type ResultStore } from './result-store';
 import type { AgentTool } from './tools';
 
 export interface GovernedExecutorOptions {
@@ -35,6 +36,9 @@ export interface GovernedExecutorOptions {
   /** Consecutive policy denials before the run stops (default 5). */
   denyBreaker?: ConsecutiveBreaker;
   now?: () => Date;
+  /** Out-of-band results (ADR-056): scrubbed output beyond `inlineChars` is stored, the model gets a page and a handle. */
+  resultStore?: ResultStore;
+  inlineChars?: number;
 }
 
 const LOW_RISK_IDEMPOTENT: ReadonlySet<RiskClass> = new Set(['READ', 'ANALYZE']);
@@ -274,7 +278,16 @@ export class GovernedToolExecutor implements ToolExecutor {
         runId: this.o.runId,
         toolCallId: record.toolCallId,
       });
-      const output = capOutput(this.o.scrubber.scrub(raw), tool.outputLimit ?? DEFAULT_OUTPUT_LIMIT);
+      const scrubbed = this.o.scrubber.scrub(raw);
+      const inline = Math.min(tool.outputLimit ?? DEFAULT_OUTPUT_LIMIT, this.o.inlineChars ?? DEFAULT_OUTPUT_LIMIT);
+      const output = this.o.resultStore
+        ? await boundOutput(scrubbed, {
+            inlineChars: inline,
+            store: this.o.resultStore,
+            tool: record.tool,
+            toolUseId: record.toolCallId,
+          })
+        : capOutput(scrubbed, inline);
       const done = { ...record, status: 'FINISHED' as const, output, outputDigest: sha256(output), isError: false };
       await this.save(done);
       await this.audit('tool.finished', record.toolCallId, {

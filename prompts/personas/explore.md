@@ -2,7 +2,7 @@
 id: explore
 role: explore
 description: Read-only sub-agent answering one question about the code.
-tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees]
+tools: [read_file, search_code, list_files, list_endpoints, auth_context, get_symbol, callers, callees, read_result, repo_map]
 tier: fast
 max_steps: 10
 ---

@@ -7,7 +7,18 @@ export interface PromptBundle {
   dir: string;
   digest: Digest;
   render(
-    name: 'explain' | 'ask' | 'planner' | 'recon' | 'investigator' | 'critic' | 'auditor' | 'remediation',
+    name:
+      | 'explain'
+      | 'ask'
+      | 'planner'
+      | 'recon'
+      | 'investigator'
+      | 'critic'
+      | 'auditor'
+      | 'remediation'
+      | 'mapper'
+      | 'reducer'
+      | 'summarize',
     vars?: Record<string, string>,
   ): string;
 }

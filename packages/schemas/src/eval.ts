@@ -39,6 +39,16 @@ export const EvalCase = z.strictObject({
     .default([]),
   /** Operator context pack handed to the AI roles (ADR-051), as `ai.context` in spinxsca.yaml. */
   ai_context: z.record(z.string(), z.unknown()).optional(),
+  /** Generated case (ADR-055): the harness writes the source and ground truth before scanning. */
+  generator: z
+    .strictObject({
+      kind: z.literal('scale'),
+      files: z.number().int().min(10).max(50_000),
+      loc: z.number().int().min(100).max(5_000_000),
+      planted: z.number().int().min(0).max(500),
+      seed: z.number().int().nonnegative(),
+    })
+    .optional(),
   /** Regions where any reported finding is a false positive. */
   negatives: z
     .array(

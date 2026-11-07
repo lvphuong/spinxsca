@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   assertPriced,
+  type CompletionRequest,
   caseSessionStore,
   checkManifest,
   compactView,
@@ -16,7 +17,10 @@ import {
   GovernedToolExecutor,
   MemorySessionStore,
   type Message,
+  type ProviderCapabilities,
+  RetryableTurnError,
   runAgentSession,
+  SCRIPTED_CAPABILITIES,
   ScriptedProvider,
   type ScriptedTurn,
   Semaphore,
@@ -376,6 +380,130 @@ describe('compaction', () => {
   });
 });
 
+/** Scripted provider that declares a small window (a local model). */
+class SmallModel extends ScriptedProvider {
+  constructor(
+    turns: ScriptedTurn[],
+    private readonly caps: Partial<ProviderCapabilities>,
+  ) {
+    super(turns);
+  }
+  override capabilities(): ProviderCapabilities {
+    return { ...SCRIPTED_CAPABILITIES, ...this.caps };
+  }
+}
+
+describe('context budget in sessions', () => {
+  const session = (provider: ScriptedProvider, tools = counterTools().tools) =>
+    runAgentSession({ runId: 'r', role: 'test', provider, system: 'sys', prompt: 'go', tools, submit });
+
+  it('compacts by default when the window is small and clamps max_tokens', async () => {
+    const turns: ScriptedTurn[] = [];
+    for (let i = 0; i < 20; i++) turns.push(call(`u${i}`, 'read_file', { path: `f${i}.ts` }));
+    turns.push(finish('done'));
+    const tools = counterTools().tools.map((t) =>
+      t.name === 'read_file' ? { ...t, run: async () => 'x'.repeat(4_000) } : t,
+    );
+    const provider = new SmallModel(turns, { maxContext: 8_000, maxOutput: 2_000 });
+    const result = await session(provider, tools as never);
+    expect(result.status).toBe('COMPLETED');
+    expect(result.compactions).toBeGreaterThan(0);
+    const last = provider.requests.at(-1) as CompletionRequest;
+    expect(last.messages.length).toBeLessThan(2 * 20 + 1);
+    const first = last.messages[0] as Message;
+    expect((first.content[0] as { text: string }).text).toBe('go');
+    for (const r of provider.requests) expect(r.maxTokens).toBeLessThanOrEqual(2_000);
+    expect(result.steps.every((s) => (s.contextTokens ?? 0) > 0)).toBe(true);
+  });
+
+  it('recovers from a context-length error by shrinking the view', async () => {
+    const turns: ScriptedTurn[] = [];
+    for (let i = 0; i < 6; i++) turns.push(call(`u${i}`, 'read_file', { path: `f${i}.ts` }));
+    let thrown = false;
+    turns.push(() => {
+      thrown = true;
+      throw new RetryableTurnError('prompt is too long: 17000 tokens > 16000 maximum', 'context', {
+        detail: { actual: 17_000, limit: 16_000 },
+      });
+    });
+    turns.push((request) => {
+      expect(request.messages.length).toBeLessThan(13);
+      return { content: [{ type: 'tool_use', id: 'fin', name: 'submit_result', input: { summary: 'done' } }] };
+    });
+    const tools = counterTools().tools.map((t) =>
+      t.name === 'read_file' ? { ...t, run: async () => 'z'.repeat(4_000) } : t,
+    );
+    const provider = new SmallModel(turns, { maxContext: 1_000_000 });
+    const result = await session(provider, tools as never);
+    expect(result.status).toBe('COMPLETED');
+    expect(thrown).toBe(true);
+    const sizes = provider.requests.map((r) => JSON.stringify(r.messages).length);
+    expect(sizes.at(-1) as number).toBeLessThan(sizes.at(-2) as number);
+  });
+
+  it('repairs a parse error with a corrective turn instead of an identical retry', async () => {
+    let attempts = 0;
+    const provider = new ScriptedProvider([
+      () => {
+        attempts++;
+        throw new RetryableTurnError('tool call read_file has invalid JSON arguments', 'parse', {
+          rawText: '{"name": "read_file", "arg',
+        });
+      },
+      finish('fin'),
+    ]);
+    const result = await session(provider);
+    expect(result.status).toBe('COMPLETED');
+    expect(attempts).toBe(1);
+    const second = provider.requests[1] as CompletionRequest;
+    const [assistant, user] = second.messages.slice(-2) as [Message, Message];
+    expect(assistant.role).toBe('assistant');
+    expect((assistant.content[0] as { text: string }).text).toContain('"read_file"');
+    expect(user.role).toBe('user');
+    expect((user.content[0] as { text: string }).text).toContain('could not be used');
+  });
+
+  it('treats a cut-off answer as a resume, not a nudge', async () => {
+    const provider = new ScriptedProvider([
+      { content: [{ type: 'text', text: 'long partial answer' }], stopReason: 'max_tokens' },
+      finish('fin'),
+    ]);
+    const result = await session(provider);
+    expect(result.status).toBe('COMPLETED');
+    const second = provider.requests[1] as CompletionRequest;
+    const lastMessage = second.messages.at(-1) as Message;
+    const text = (lastMessage.content[0] as { text: string }).text;
+    expect(text).toContain('Output token limit hit');
+    expect(text).not.toContain('Finish by calling');
+    expect(second.toolChoice).toBe('auto');
+  });
+
+  it('asks for a required tool call after an answer without one', async () => {
+    const provider = new ScriptedProvider([{ content: [{ type: 'text', text: 'thinking out loud' }] }, finish('fin')]);
+    await session(provider);
+    expect((provider.requests[1] as { toolChoice?: string }).toolChoice).toBe('required');
+  });
+
+  it('clears old read-only tool results before summarising', async () => {
+    const turns: ScriptedTurn[] = [];
+    for (let i = 0; i < 8; i++) turns.push(call(`u${i}`, 'read_file', { path: `f${i}.ts` }));
+    turns.push(finish('done'));
+    const tools = counterTools().tools.map((t) =>
+      t.name === 'read_file' ? { ...t, run: async () => 'y'.repeat(3_000) } : t,
+    );
+    // effective 10k, threshold 8k: eight 750-token results cross 60% of it but never the threshold.
+    const provider = new SmallModel(turns, { maxContext: 12_000, maxOutput: 2_000 });
+    const result = await session(provider, tools as never);
+    expect(result.status).toBe('COMPLETED');
+    expect(result.compactions).toBe(0);
+    const last = provider.requests.at(-1) as CompletionRequest;
+    const results = last.messages.flatMap((m) => m.content.filter((b) => b.type === 'tool_result'));
+    const cleared = results.filter((b) => b.type === 'tool_result' && b.content.startsWith('[earlier result of'));
+    expect(cleared.length).toBe(results.length - 5);
+    expect((cleared[0] as { content: string }).content).toContain('read_file(f0.ts)');
+  });
+});
+
 describe('budget and manifests', () => {
   it('prices with overrides and refuses unpriced models when unattended', () => {
     const cost = costWithOverrides(() => undefined, { 'local-llm': { input: 1, output: 2 } });
@@ -426,7 +554,7 @@ describe('explore sub-agent', () => {
     });
     const out = await explore.run({ question: 'Where is the order owner checked?' }, {});
     expect(out).toContain('src/a.ts:1-3');
-    expect(provider.requests[0]?.tools.map((t) => t.name)).toEqual(['read_file', 'submit_answer']);
+    expect(provider.requests[0]?.tools.map((t) => t.name)).toEqual(['read_file', 'read_result', 'submit_answer']);
     expect(runs).toEqual(['explore:run_parent:COMPLETED']);
   });
 });

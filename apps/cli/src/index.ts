@@ -1,6 +1,7 @@
 import { ENGINE_VERSION } from '@spinxsca/core';
 import { Command, Option } from 'commander';
 import pc from 'picocolors';
+import { aiDoctorCommand } from './commands/ai-doctor';
 import { evalCommand } from './commands/eval';
 import { askCommand, explainCommand } from './commands/explain';
 import { exportCommand, sbomCommand } from './commands/export';
@@ -60,7 +61,10 @@ function stateOptions(command: Command): Command {
 function aiFlags(command: Command): Command {
   return command
     .addOption(
-      new Option('--ai-provider <provider>', 'AI provider').choices(['anthropic', 'openai-compatible', 'scripted']),
+      new Option(
+        '--ai-provider <provider>',
+        'AI provider (scripted-weak: scripted double behaving like a small prompted-tool model)',
+      ).choices(['anthropic', 'openai-compatible', 'ollama', 'scripted', 'scripted-weak']),
     )
     .option('--model <id>', 'model id (default claude-opus-5-5)')
     .option('--max-cost <usd>', 'cost budget in USD');
@@ -119,6 +123,15 @@ aiFlags(
     'operator context (roles, trust claims, business invariants, accepted risks) as YAML; never read from the repository',
   )
   .option('--max-ai-findings <n>', 'explain at most this many new findings')
+  .addOption(
+    new Option(
+      '--shards <mode>',
+      'sharded investigation for large repositories: auto (default), on, off or a shard cap',
+    ).argParser((v: string) => v),
+  )
+  .option('--map-model <alias>', 'ai.models alias for shard workers (overrides ai.routing.map)')
+  .option('--reduce-model <alias>', 'ai.models alias for the reducer (overrides ai.routing.reduce)')
+  .option('--map-workers <n>', 'concurrent shard workers (bounded by the endpoint limit)')
   .option('--resume <scanId>', 'resume an interrupted scan')
   .option('--no-cache', 'do not reuse scanner output from earlier scans with identical inputs')
   .action(run(scanCommand));
@@ -567,6 +580,20 @@ kbOptions(
   .option('--ecosystem <name>', 'only this ecosystem (repeatable)', collect)
   .action(run(kbExportCommand));
 
+const ai = program.command('ai').description('model endpoints: diagnostics for self-hosted LLMs');
+ai.command('doctor')
+  .description(
+    'probe a self-hosted endpoint (context window, tool calls, JSON, throughput) and print the ai.models configuration to use',
+  )
+  .addOption(new Option('--provider <provider>', 'endpoint kind').choices(['openai-compatible', 'ollama']))
+  .option('--base-url <url>', 'endpoint URL (http://host:8000/v1 or http://host:11434)')
+  .option('--model <id>', 'model id as the server knows it')
+  .option('--api-key-env <VAR>', 'environment variable holding the API key')
+  .option('--alias <alias>', 'check an alias from ai.models instead of flags')
+  .option('-c, --config <file>', 'configuration file')
+  .option('--json', 'JSON output')
+  .action(run(aiDoctorCommand));
+
 program
   .command('info')
   .description('show versions, pinned images, rule and prompt digests, knowledge base and sandbox preflight')
@@ -596,7 +623,7 @@ program
       '--ai-provider <provider>',
       'AI provider for --ai (scripted never calls a model; live_only ground truth stays pending)',
     )
-      .choices(['anthropic', 'openai-compatible', 'scripted'])
+      .choices(['anthropic', 'openai-compatible', 'ollama', 'scripted', 'scripted-weak'])
       .default('scripted'),
   )
   .option('--json', 'JSON output')

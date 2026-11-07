@@ -53,8 +53,8 @@ describe('runAgent', () => {
     const third = provider.requests[2]?.messages.at(-1)?.content[0];
     expect(third).toMatchObject({ type: 'tool_result', toolUseId: 't2', isError: true });
     expect((third as { content: string }).content).toContain('classification');
-    expect(provider.requests[0]?.tools.map((t) => t.name)).toEqual(['code_read', 'submit_verdict']);
-    expect(provider.requests[0]?.tools.map((t) => t.eagerInput)).toEqual([undefined, false]);
+    expect(provider.requests[0]?.tools.map((t) => t.name)).toEqual(['code_read', 'read_result', 'submit_verdict']);
+    expect(provider.requests[0]?.tools.map((t) => t.eagerInput)).toEqual([undefined, undefined, false]);
   });
 
   it('nudges a model that answers in text and fails after repeated non-submission', async () => {
